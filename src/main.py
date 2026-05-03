@@ -3,14 +3,17 @@ import asyncio
 import telebot
 from telebot.async_telebot import AsyncTeleBot
 import handlers
+from storage import init_db
 from utils import init_client
 
 # Init args
 parser = argparse.ArgumentParser()
 parser.add_argument("tg_token", help="telegram token")
 parser.add_argument("GOOGLE_GEMINI_KEY", help="Google Gemini API key")
+parser.add_argument("--db-path", default="data/bot.db", help="SQLite database path")
 options = parser.parse_args()
 init_client(options.GOOGLE_GEMINI_KEY)
+init_db(options.db_path)
 print("Arg parse done.")
 
 

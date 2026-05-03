@@ -6,7 +6,7 @@ from md2tgmd import escape
 from telebot import TeleBot
 
 from config import conf
-from utils import init_user
+from utils import init_user, save_turn
 
 model_1                 =       conf["model_1"]
 model_2                 =       conf["model_2"]
@@ -78,6 +78,11 @@ async def gemini_stream(bot:TeleBot, message:Message, contents:str|list) -> None
                         )
                 except Exception:
                     traceback.print_exc()
+
+            try:
+                await save_turn(message.from_user.id, contents, full_response)
+            except Exception:
+                traceback.print_exc()
 
         except Exception as e:
             traceback.print_exc()

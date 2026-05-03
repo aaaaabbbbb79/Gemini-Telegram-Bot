@@ -2,7 +2,16 @@ from google.genai.chats import AsyncChat
 from google import genai
 from asyncio import Lock, to_thread
 from time import time
-from typing import TypedDict
+from typing import Any, TypedDict
+
+from config import conf
+from storage import (
+    append_turn,
+    clear_user_history,
+    get_user_model,
+    load_history,
+    set_user_model,
+)
 
 class UserSession(TypedDict):
     chat: AsyncChat | None
@@ -85,10 +94,16 @@ async def init_user(user_id: int) -> UserSession:
     """
     if user_id not in chat_dict:#if not find user's chat
         lock = Lock()
+        model = await to_thread(get_user_model, user_id)
+        if model:
+            history = await to_thread(load_history, user_id, conf["max_history_turns"])
+            chat = get_client().aio.chats.create(model=model, history=history)
+        else:
+            chat = None
         chat_dict[user_id] = {
-            "chat": None,
+            "chat": chat,
             "lock": lock,
-            "model": None,
+            "model": model,
         }
     return chat_dict[user_id]
 
@@ -106,12 +121,9 @@ async def select_model(user_id: int, new_model: str) -> str:
     lock = session["lock"]
 
     async with lock:
-        old_chat = session["chat"]
-        history = old_chat.get_history() if old_chat else None
-        if history:
-            new_chat = get_client().aio.chats.create(model=new_model, history=history)
-        else:
-            new_chat = get_client().aio.chats.create(model=new_model)
+        history = await to_thread(load_history, user_id, conf["max_history_turns"])
+        new_chat = get_client().aio.chats.create(model=new_model, history=history)
+        await to_thread(set_user_model, user_id, new_model)
         session["chat"] = new_chat
         session["model"] = new_model
 
@@ -138,5 +150,32 @@ async def clear_history(user_id: int) -> None:
         if model is None:
             session["chat"] = None
             return
+        await to_thread(clear_user_history, user_id)
         new_chat = get_client().aio.chats.create(model=model)
         session["chat"] = new_chat
+
+def _normalize_contents_for_history(contents: str | list[Any]) -> str:
+    if isinstance(contents, str):
+        return contents
+
+    caption = ""
+    for item in contents:
+        if isinstance(item, str):
+            caption = item.strip()
+            break
+
+    if caption:
+        return f"[Image] {caption}"
+    return "[Image]"
+
+async def save_turn(user_id: int, contents: str | list[Any], model_text: str) -> None:
+    if not model_text.strip():
+        return
+
+    session = await init_user(user_id)
+    model = session["model"]
+    if model is None:
+        return
+
+    user_text = _normalize_contents_for_history(contents)
+    await to_thread(append_turn, user_id, model, user_text, model_text, conf["max_history_turns"])

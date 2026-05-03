@@ -7,6 +7,7 @@ conf = {
     "model_1":              "gemini-3-flash-preview",
     "model_2":              "gemini-2.5-pro",
     "streaming_update_interval": 0.5,  # Streaming answer update interval (seconds)
+    "max_history_turns":    20,
 }
 
 safety_settings = [
