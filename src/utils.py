@@ -179,3 +179,5 @@ async def save_turn(user_id: int, contents: str | list[Any], model_text: str) ->
 
     user_text = _normalize_contents_for_history(contents)
     await to_thread(append_turn, user_id, model, user_text, model_text, conf["max_history_turns"])
+    history = await to_thread(load_history, user_id, conf["max_history_turns"])
+    session["chat"] = get_client().aio.chats.create(model=model, history=history)

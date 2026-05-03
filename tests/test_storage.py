@@ -100,6 +100,7 @@ class UtilsSqliteTest(unittest.IsolatedAsyncioTestCase):
         await utils.save_turn(7, "hello", "hi")
         await utils.save_turn(7, [object(), "what is this?"], "an image answer")
         await utils.save_turn(7, "empty", "   ")
+        self.assertEqual(len(utils.chat_dict[7]["chat"].history), 4)
 
         history = storage.load_history(7, 20)
         self.assertEqual(
