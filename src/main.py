@@ -23,7 +23,7 @@ async def main():
         telebot.types.BotCommand("start", "Start"),
         telebot.types.BotCommand("gemini", "Chat with gemini"),
         telebot.types.BotCommand("clear", "Clear all history"),
-        telebot.types.BotCommand("switch","switch model")
+        telebot.types.BotCommand("model","Choose model")
     ],
 )
     print("Bot init done.")
@@ -32,9 +32,10 @@ async def main():
     bot.register_message_handler(handlers.start,                         commands=['start'],         pass_bot=True)
     bot.register_message_handler(handlers.gemini_handler,                commands=['gemini'],        pass_bot=True)
     bot.register_message_handler(handlers.clear,                         commands=['clear'],         pass_bot=True)
-    bot.register_message_handler(handlers.switch,                        commands=['switch'],        pass_bot=True)
+    bot.register_message_handler(handlers.model,                         commands=['model'],         pass_bot=True)
     bot.register_message_handler(handlers.gemini_photo_handler,          content_types=["photo"],    pass_bot=True)
     bot.register_message_handler(handlers.gemini_private_handler,        content_types=['text'],     pass_bot=True, func=lambda message: message.chat.type == "private")
+    bot.register_callback_query_handler(handlers.model_callback,          func=lambda call: (call.data or "").startswith("model:"), pass_bot=True)
 
     # Start bot
     print("Starting Gemini_Telegram_Bot.")

@@ -16,7 +16,16 @@ download_pic_notify     =       conf["download_pic_notify"]
 
 async def gemini_stream(bot:TeleBot, message:Message, contents:str|list) -> None:
     sent_message = await bot.reply_to(message, "🤖 Generating answers...")
-    chat, lock = await init_user(message.from_user.id)
+    session = await init_user(message.from_user.id)
+    chat = session["chat"]
+    lock = session["lock"]
+    if chat is None:
+        await bot.edit_message_text(
+            "Please choose a model first with /model.",
+            chat_id=sent_message.chat.id,
+            message_id=sent_message.message_id
+        )
+        return
 
     async with lock:
         try:

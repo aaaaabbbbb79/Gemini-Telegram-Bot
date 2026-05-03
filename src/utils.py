@@ -1,11 +1,30 @@
-from config import conf
 from google.genai.chats import AsyncChat
 from google import genai
-from asyncio import Lock
-from typing import Tuple
+from asyncio import Lock, to_thread
+from time import time
+from typing import TypedDict
 
-chat_dict: dict[int, list[AsyncChat, Lock]] = {}
+class UserSession(TypedDict):
+    chat: AsyncChat | None
+    lock: Lock
+    model: str | None
+
+chat_dict: dict[int, UserSession] = {}
 client: genai.Client | None = None
+model_cache: dict[str, object] = {
+    "models": [],
+    "updated_at": 0.0,
+}
+MODEL_CACHE_TTL = 3600
+EXCLUDED_MODEL_NAME_PARTS = (
+    "computer-use",
+    "customtools",
+    "embedding",
+    "image",
+    "live",
+    "robotics",
+    "tts",
+)
 
 def init_client(api_key: str) -> None:
     """Initialize the Gemini client once during application startup."""
@@ -17,45 +36,90 @@ def get_client() -> genai.Client:
         raise RuntimeError("Gemini client is not initialized")
     return client
 
-async def init_user(user_id: int) -> Tuple[AsyncChat, Lock]:
+def _normalize_model_name(model_name: str) -> str:
+    return model_name.removeprefix("models/")
+
+def _is_chat_model(model_name: str, supported_actions: list[str]) -> bool:
+    if not model_name.startswith("gemini-"):
+        return False
+    if "generateContent" not in supported_actions:
+        return False
+    return not any(part in model_name for part in EXCLUDED_MODEL_NAME_PARTS)
+
+def _fetch_available_models() -> list[str]:
+    models: list[str] = []
+    for model in get_client().models.list():
+        name = _normalize_model_name(model.name)
+        supported_actions = getattr(model, "supported_actions", []) or []
+        if not _is_chat_model(name, supported_actions):
+            continue
+        models.append(name)
+    return sorted(set(models))
+
+async def list_available_models(force_refresh: bool = False) -> list[str]:
+    now = time()
+    cached_models = model_cache["models"]
+    updated_at = model_cache["updated_at"]
+    if (
+        not force_refresh
+        and isinstance(cached_models, list)
+        and cached_models
+        and isinstance(updated_at, float)
+        and now - updated_at < MODEL_CACHE_TTL
+    ):
+        return cached_models
+
+    models = await to_thread(_fetch_available_models)
+    model_cache["models"] = models
+    model_cache["updated_at"] = now
+    return models
+
+async def init_user(user_id: int) -> UserSession:
     """if user not exist in chat_dict, create one
     
     Args:
         user_id: (int): user's id
 
     Returns:
-        AsyncChat: user's chat session
-        Lock:      user's chat lock
+        UserSession: user's chat session state
     """
     if user_id not in chat_dict:#if not find user's chat
-        chat = get_client().aio.chats.create(model=conf["model_1"])
         lock = Lock()
-        chat_dict[user_id] = [chat, lock]
-    else:
-        chat, lock = chat_dict[user_id]
-    return chat, lock
+        chat_dict[user_id] = {
+            "chat": None,
+            "lock": lock,
+            "model": None,
+        }
+    return chat_dict[user_id]
 
-async def switch_model(user_id: int) -> str:
-    """Update user's chat session, keep the history
+async def select_model(user_id: int, new_model: str) -> str:
+    """Select user's chat model, keeping history when a chat already exists.
     
     Args:
         user_id (int): user's id
+        new_model (str): model to use
 
     Returns:
         str: chat's current model
     """
-    old_chat, lock = await init_user(user_id)
+    session = await init_user(user_id)
+    lock = session["lock"]
 
     async with lock:
-        if(old_chat._model == conf["model_1"]):
-            new_model = conf["model_2"]
+        old_chat = session["chat"]
+        history = old_chat.get_history() if old_chat else None
+        if history:
+            new_chat = get_client().aio.chats.create(model=new_model, history=history)
         else:
-            new_model = conf["model_1"]
-        history = old_chat.get_history()
-        new_chat = get_client().aio.chats.create(model=new_model, history = history)
-        chat_dict[user_id] = [new_chat, lock]
+            new_chat = get_client().aio.chats.create(model=new_model)
+        session["chat"] = new_chat
+        session["model"] = new_model
 
         return new_model
+
+async def get_current_model(user_id: int) -> str | None:
+    session = await init_user(user_id)
+    return session["model"]
 
 async def clear_history(user_id: int) -> None:
     """clear user's history
@@ -66,9 +130,13 @@ async def clear_history(user_id: int) -> None:
     Returns:
         None
     """
-    old_chat, lock = await init_user(user_id)
+    session = await init_user(user_id)
+    lock = session["lock"]
 
     async with lock:
-        model = old_chat._model
+        model = session["model"]
+        if model is None:
+            session["chat"] = None
+            return
         new_chat = get_client().aio.chats.create(model=model)
-        chat_dict[user_id] = [new_chat, lock]
+        session["chat"] = new_chat

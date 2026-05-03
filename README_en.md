@@ -50,7 +50,7 @@ Click on the button below for a one-click deployment.
 1. Send your questions directly in a private chat.
 2. In a group chat, use **/gemini** + your question. Photo is supported.
 3. You can use the **/clear** command to delete the current conversation history.
-4. You can use the **/switch** command to switch the model.
+4. You can use the **/model** command to choose or switch the model.
 
 
 # Reference

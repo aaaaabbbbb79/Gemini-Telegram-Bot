@@ -50,7 +50,7 @@ docker run -d --restart=always -e TELEGRAM_BOT_API_KEY={Telegram 机器人 API} 
 1. 私聊中直接发送你的问题即可
 2. 群组中使用 **/gemini +你的问题**，支持图片
 3. 删除对话的历史记录请使用 **/clear**
-4. 切换调用的模型请使用 **/switch**
+4. 选择或切换调用的模型请使用 **/model**
 
 
 # 参考信息
