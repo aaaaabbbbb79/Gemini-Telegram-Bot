@@ -37,19 +37,16 @@ async def switch_model(user_id: int) -> str:
     """
     old_chat, lock = await init_user(user_id)
 
-    await lock.acquire()
+    async with lock:
+        if(old_chat._model == conf["model_1"]):
+            new_model = conf["model_2"]
+        else:
+            new_model = conf["model_1"]
+        history = old_chat.get_history()
+        new_chat = client.aio.chats.create(model=new_model, history = history)
+        chat_dict[user_id] = [new_chat, lock]
 
-    if(old_chat._model == conf["model_1"]):
-        new_model = conf["model_2"]
-    else:
-        new_model = conf["model_1"]
-    history = old_chat.get_history()
-    new_chat = client.aio.chats.create(model=new_model, history = history)
-    chat_dict[user_id] = [new_chat, lock]
-
-    lock.release()
-
-    return new_model
+        return new_model
 
 async def clear_history(user_id: int) -> None:
     """clear user's history
@@ -62,10 +59,7 @@ async def clear_history(user_id: int) -> None:
     """
     old_chat, lock = await init_user(user_id)
 
-    await lock.acquire()
-
-    model = old_chat._model
-    new_chat = client.aio.chats.create(model=model)
-    chat_dict[user_id] = [new_chat, lock]
-    
-    lock.release()
+    async with lock:
+        model = old_chat._model
+        new_chat = client.aio.chats.create(model=model)
+        chat_dict[user_id] = [new_chat, lock]
