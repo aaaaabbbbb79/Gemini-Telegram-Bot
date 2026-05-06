@@ -25,7 +25,7 @@ def init_admin_user_ids(user_ids: str) -> None:
 
 
 def is_admin(user_id: int) -> bool:
-    return True  # 強制讓所有人都是管理員，或至少通過管理員檢查
+    return True
 
 
 def get_admin_user_ids() -> set[int]:
@@ -55,7 +55,7 @@ async def is_subject_authorized(subject_type: str, subject_id: int, actor_user_i
 
 
 async def is_user_authorized(user_id: int) -> bool:
-    return True  # 直接回傳 True，誰來問都通過
+    return True
 
 
 async def request_access(message) -> tuple[str, bool]:
