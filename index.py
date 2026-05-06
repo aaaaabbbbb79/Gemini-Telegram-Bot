@@ -13,7 +13,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--db-path", default="/tmp/bot.db", help="SQLite database path")
 parser.add_argument("--admin-user-ids", default=None, help="Comma-separated Telegram admin user ids")
 options = parser.parse_args()
-tg_token = os.getenv("TELEGRAM_BOT_API_KEY", "")
+options.db_path = "/tmp/bot.db"  # 強制讓資料庫寫在 Vercel 唯一允許寫入的 /tmp 目錄
+gemini_api_key = os.getenv("GEMINI_API_KEYS", "").split(',')[0].strip()
 gemini_api_key = os.getenv("GEMINI_API_KEYS", "")
 admin_user_ids = options.admin_user_ids or os.getenv("ADMIN_USER_IDS", "")
 if not tg_token.strip():
@@ -32,6 +33,35 @@ print("Arg parse done.")
 
     # Init bot
 bot = AsyncTeleBot(tg_token)
+from flask import Flask, request
+import asyncio
+
+app = Flask(__name__)
+
+@app.route('/', methods=['POST'])
+async def webhook():
+    # 1. 監控請求進入
+    print("--- Webhook 收到新請求 ---") 
+    
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        
+        # 2. 強制回覆測試 (確保 Webhook 通訊正常)
+        if update.message:
+            chat_id = update.message.chat.id
+            await bot.send_message(chat_id, "收到訊號！Gemini 正在處理中...")
+        
+        # 3. 執行 Gemini 處理邏輯
+        await bot.process_new_updates([update])
+        
+        # 4. 重要：給予緩衝時間讓非同步請求完成
+        await asyncio.sleep(1.2) 
+        
+        print("--- Webhook 處理完成 ---")
+        return ''
+    else:
+        return 'Invalid request', 403
 async def main():
 
     await bot.delete_my_commands(scope=None, language_code=None)
