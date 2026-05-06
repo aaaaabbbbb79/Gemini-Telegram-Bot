@@ -35,11 +35,14 @@ def get_user_error_message(error: Exception) -> str:
         return conf["timeout_error_info"]
     return error_info
 
-async def gemini_stream(bot:TeleBot, message:Message, contents:str|list) -> None:
-    sent_message = await bot.reply_to(message, "🤖 Generating answers...")
+async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) -> None:
+    # 1. 發送一個正在思考的提示
+    sent_message = await bot.reply_to(message, "🤖 Gemini is thinking...")
+    
     session = await init_user(message.from_user.id)
     chat = session["chat"]
     lock = session["lock"]
+    
     if chat is None:
         await bot.edit_message_text(
             "Please choose a model first with /model.",
@@ -50,38 +53,12 @@ async def gemini_stream(bot:TeleBot, message:Message, contents:str|list) -> None
 
     async with lock:
         try:
-            response = await chat.send_message_stream(contents)
+            # 2. 修改點：捨棄 stream 模式，改用一次性獲取
+            # 這樣連線只會開一次，最符合 Serverless 環境
+            response = await chat.send_message(contents)
+            full_response = response.text
 
-            full_response = ""
-            last_update = time.time()
-            update_interval = conf["streaming_update_interval"]
-
-            async for chunk in response:
-                if hasattr(chunk, 'text') and chunk.text:
-                    full_response += chunk.text
-                    current_time = time.time()
-
-                    if current_time - last_update >= update_interval:
-
-                        try:
-                            await bot.edit_message_text(
-                                escape(full_response),
-                                chat_id=sent_message.chat.id,
-                                message_id=sent_message.message_id,
-                                parse_mode="MarkdownV2"
-                                )
-                        except Exception as e:
-                            if "parse markdown" in str(e).lower():
-                                await bot.edit_message_text(
-                                    full_response,
-                                    chat_id=sent_message.chat.id,
-                                    message_id=sent_message.message_id
-                                    )
-                            else:
-                                if "message is not modified" not in str(e).lower():
-                                    print(f"Error updating message: {e}")
-                        last_update = current_time
-
+            # 3. 嘗試用 MarkdownV2 格式更新訊息
             try:
                 await bot.edit_message_text(
                     escape(full_response),
@@ -90,16 +67,14 @@ async def gemini_stream(bot:TeleBot, message:Message, contents:str|list) -> None
                     parse_mode="MarkdownV2"
                 )
             except Exception as e:
-                try:
-                    if "parse markdown" in str(e).lower():
-                        await bot.edit_message_text(
-                            full_response,
-                            chat_id=sent_message.chat.id,
-                            message_id=sent_message.message_id
-                        )
-                except Exception:
-                    traceback.print_exc()
+                # 如果 Markdown 解析失敗（常見於代碼區塊），改用純文字
+                await bot.edit_message_text(
+                    full_response,
+                    chat_id=sent_message.chat.id,
+                    message_id=sent_message.message_id
+                )
 
+            # 4. 儲存對話紀錄
             try:
                 await save_turn(message.from_user.id, contents, full_response)
             except Exception:
@@ -107,9 +82,10 @@ async def gemini_stream(bot:TeleBot, message:Message, contents:str|list) -> None
 
         except Exception as e:
             traceback.print_exc()
+            error_msg = get_user_error_message(e)
             try:
                 await bot.edit_message_text(
-                    get_user_error_message(e),
+                    error_msg,
                     chat_id=sent_message.chat.id,
                     message_id=sent_message.message_id
                 )
