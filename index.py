@@ -80,6 +80,11 @@ async def webhook():
         
         # 3. 監控處理開始
         print(f"開始處理 Update ID: {update.update_id}")
+        # --- 強制回覆測試 ---
+        if update.message:
+            chat_id = update.message.chat.id
+            await bot.send_message(chat_id, "收到訊號！我正在嘗試呼叫 Gemini...")
+        # ------------------
         await bot.process_new_updates([update])
         
         # 4. 監控處理結束
