@@ -2,7 +2,7 @@ import traceback
 import io
 from PIL import Image
 import gemini as gemini
-from telebot import TeleBot
+from telebot.async_telebot import AsyncTeleBot as TeleBot
 from telebot.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from md2tgmd import escape
 from config import conf
