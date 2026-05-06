@@ -52,12 +52,15 @@ async def webhook():
             chat_id = update.message.chat.id
             await bot.send_message(chat_id, "收到訊號！Gemini 正在處理中...")
         
-        # 3. 執行 Gemini 處理邏輯
-        await bot.process_new_updates([update])
-        
-        # 4. 重要：給予緩衝時間讓非同步請求完成
-        await asyncio.sleep(1.2) 
-        
+       # 3. 執行 Gemini 處理邏輯
+        try:
+            await bot.process_new_updates([update])
+        except Exception as e:
+            print(f"處理出錯: {e}")
+
+        # 4. 重要：延長緩衝時間至 2.0 秒，確保 Gemini 回覆能成功傳出
+        await asyncio.sleep(2.0)
+
         print("--- Webhook 處理完成 ---")
         return ''
     else:
