@@ -115,8 +115,8 @@ async def send_model_picker(message: Message, bot: TeleBot) -> None:
 
 async def start(message: Message, bot: TeleBot) -> None:
     try:
-        if not await ensure_authorized(message, bot):
-            return
+      #  if not await ensure_authorized(message, bot):
+      #      return
         await bot.reply_to(message , escape("Welcome, you can ask me questions now. \nFor example: `Who is john lennon?`"), parse_mode="MarkdownV2")
         await send_model_picker(message, bot)
     except Exception:
@@ -124,8 +124,8 @@ async def start(message: Message, bot: TeleBot) -> None:
         await bot.reply_to(message, error_info)
 
 async def gemini_handler(message: Message, bot: TeleBot) -> None:
-    if not await ensure_authorized(message, bot):
-        return
+  #  if not await ensure_authorized(message, bot):
+   #     return
     try:
         contents = message.text.strip().split(maxsplit=1)[1].strip()
     except IndexError:
@@ -267,8 +267,8 @@ async def access_callback(call: CallbackQuery, bot: TeleBot) -> None:
         await bot.answer_callback_query(call.id, text="Failed to review request", show_alert=True)
 
 async def gemini_private_handler(message: Message, bot: TeleBot) -> None:
-    if not await ensure_authorized(message, bot):
-        return
+   # if not await ensure_authorized(message, bot):
+    #    return
     contents = message.text.strip()
     if await get_current_model(message.from_user.id) is None:
         await send_model_picker(message, bot)
