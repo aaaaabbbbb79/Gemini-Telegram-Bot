@@ -3,4 +3,4 @@ google-genai
 aiohttp
 md2tgmd
 Pillow
-Flask
+Flask[async]
