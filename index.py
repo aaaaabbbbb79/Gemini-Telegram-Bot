@@ -10,7 +10,7 @@ from utils import init_client
 
 # Init args
 parser = argparse.ArgumentParser()
-parser.add_argument("--db-path", default="data/bot.db", help="SQLite database path")
+parser.add_argument("--db-path", default="/tmp/bot.db", help="SQLite database path")
 parser.add_argument("--admin-user-ids", default=None, help="Comma-separated Telegram admin user ids")
 options = parser.parse_args()
 tg_token = os.getenv("TELEGRAM_BOT_API_KEY", "")
@@ -61,7 +61,20 @@ async def main():
 
     # Start bot
     print("Starting Gemini_Telegram_Bot.")
-    await bot.polling(none_stop=True)
+# --- 以下是為了適應 Vercel Webhook 的修改 ---
+from flask import Flask, request
 
-if __name__ == '__main__':
-    asyncio.run(main())
+app = Flask(__name__)
+
+@app.route('/', methods=['POST'])
+async def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        await bot.process_new_updates([update])
+        return ''
+    else:
+        return 'Invalid request', 403
+
+# 這裡移除原本的 asyncio.run(main()) 或是 bot.polling
+# Vercel 會尋找名為 'app' 的 Flask 實例
