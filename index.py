@@ -30,10 +30,10 @@ init_client(gemini_api_key)
 init_db(options.db_path)
 print("Arg parse done.")
 
-
-async def main():
     # Init bot
-    bot = AsyncTeleBot(tg_token)
+bot = AsyncTeleBot(tg_token)
+async def main():
+
     await bot.delete_my_commands(scope=None, language_code=None)
     await bot.set_my_commands(
     commands=[
