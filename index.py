@@ -40,31 +40,22 @@ app = Flask(__name__)
 
 @app.route('/', methods=['POST'])
 async def webhook():
-    # 1. 監控請求進入
-    print("--- Webhook 收到新請求 ---") 
-    
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
         
-        # 2. 強制回覆測試 (確保 Webhook 通訊正常)
-        if update.message:
-            chat_id = update.message.chat.id
-            await bot.send_message(chat_id, "收到訊號！Gemini 正在處理中...")
-        
-       # 3. 執行 Gemini 處理邏輯
+        # 1. 確保使用 await 處理更新
+        # 這會強迫程式等待 handlers.py 裡面的邏輯全部執行完畢
         try:
             await bot.process_new_updates([update])
         except Exception as e:
-            print(f"處理出錯: {e}")
+            print(f"處理更新時發生錯誤: {e}")
 
-        # 4. 重要：延長緩衝時間至 2.0 秒，確保 Gemini 回覆能成功傳出
-        await asyncio.sleep(2.0)
-
-        print("--- Webhook 處理完成 ---")
+        # 2. 這裡稍微多留一點點緩衝，讓 aiohttp 有時間關閉 Session
+        await asyncio.sleep(1.0) 
+        
         return ''
-    else:
-        return 'Invalid request', 403
+    return 'Forbidden', 403
 async def main():
 
     await bot.delete_my_commands(scope=None, language_code=None)
