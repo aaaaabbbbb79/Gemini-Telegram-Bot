@@ -68,13 +68,23 @@ app = Flask(__name__)
 
 @app.route('/', methods=['POST'])
 async def webhook():
+    # 1. 監控請求進入
+    print("--- Webhook 收到新請求 ---") 
+    
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
+        # 2. 確保有抓到 Telegram 的 JSON
+        print(f"收到內容長度: {len(json_string)}") 
+        
         update = telebot.types.Update.de_json(json_string)
+        
+        # 3. 監控處理開始
+        print(f"開始處理 Update ID: {update.update_id}")
         await bot.process_new_updates([update])
+        
+        # 4. 監控處理結束
+        print("--- Webhook 處理完成 ---")
         return ''
     else:
+        print("收到非 JSON 請求，拒絕存取")
         return 'Invalid request', 403
-
-# 這裡移除原本的 asyncio.run(main()) 或是 bot.polling
-# Vercel 會尋找名為 'app' 的 Flask 實例
