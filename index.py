@@ -14,8 +14,8 @@ parser.add_argument("--db-path", default="/tmp/bot.db", help="SQLite database pa
 parser.add_argument("--admin-user-ids", default=None, help="Comma-separated Telegram admin user ids")
 options = parser.parse_args()
 options.db_path = "/tmp/bot.db"  # 強制讓資料庫寫在 Vercel 唯一允許寫入的 /tmp 目錄
+tg_token = os.getenv("TELEGRAM_BOT_API_KEY", "")  # <--- 你漏掉的是這行！
 gemini_api_key = os.getenv("GEMINI_API_KEYS", "").split(',')[0].strip()
-gemini_api_key = os.getenv("GEMINI_API_KEYS", "")
 admin_user_ids = options.admin_user_ids or os.getenv("ADMIN_USER_IDS", "")
 if not tg_token.strip():
     parser.error("TELEGRAM_BOT_API_KEY is required")
