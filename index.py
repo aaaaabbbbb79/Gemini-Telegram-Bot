@@ -8,7 +8,7 @@ from access_control import init_admin_user_ids
 from storage import init_db
 from utils import init_client
 
-# Init args
+# Init args v2
 parser = argparse.ArgumentParser()
 parser.add_argument("--db-path", default="/tmp/bot.db", help="SQLite database path")
 parser.add_argument("--admin-user-ids", default=None, help="Comma-separated Telegram admin user ids")
