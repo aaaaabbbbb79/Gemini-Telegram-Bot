@@ -28,7 +28,7 @@ download_pic_notify     =       conf["download_pic_notify"]
 MODEL_CALLBACK_PREFIX   =       "model:"
 ACCESS_CALLBACK_PREFIX  =       "access:"
 
-# --- 輔助函數：建立鍵盤 ---
+# --- 輔助函數 ---
 def build_zodiac_keyboard():
     zodiacs = ["牡羊座", "金牛座", "雙子座", "巨蟹座", "獅子座", "處女座", "天秤座", "天蠍座", "射手座", "摩羯座", "水瓶座", "雙魚座"]
     markup = InlineKeyboardMarkup(row_width=3)
@@ -62,16 +62,43 @@ def build_time_picker_keyboard(action, sign):
     markup.add(*btns)
     return markup
 
-# --- 核心邏輯與權限 ---
+def build_access_markup(subject_type: str, subject_id: int) -> InlineKeyboardMarkup:
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("Approve", callback_data=f"{ACCESS_CALLBACK_PREFIX}approve:{subject_type}:{subject_id}"),
+        InlineKeyboardButton("Reject", callback_data=f"{ACCESS_CALLBACK_PREFIX}reject:{subject_type}:{subject_id}"),
+    )
+    return markup
+
+def format_access_request(message: Message) -> str:
+    user = message.from_user
+    username = f"@{user.username}" if user.username else "N/A"
+    full_name = " ".join(part for part in [user.first_name, user.last_name] if part) or "N/A"
+    return f"New user access request\nUser ID: {user.id}\nUsername: {username}\nName: {full_name}"
+
+async def notify_admins_access_request(message: Message, bot: TeleBot) -> None:
+    subject_type, subject_id = get_access_subject(message)
+    for admin_id in get_admin_user_ids():
+        try:
+            await bot.send_message(admin_id, format_access_request(message), reply_markup=build_access_markup(subject_type, subject_id))
+        except Exception:
+            traceback.print_exc()
+
 async def ensure_authorized(message: Message, bot: TeleBot) -> bool:
     subject_type, subject_id = get_access_subject(message)
     if await is_subject_authorized(subject_type, subject_id, message.from_user.id):
         return True
+    current_status = await get_subject_access_status(subject_type, subject_id)
+    if current_status is None and not await are_access_requests_enabled():
+        await bot.reply_to(message, "Access requests are currently closed.")
+        return False
     status, created = await request_access(message)
     if status == "approved": return True
+    if created: await notify_admins_access_request(message, bot)
+    await bot.reply_to(message, "Your access request has been submitted. Please wait.")
     return False
 
-# --- 指令處理器 (Handlers) ---
+# --- 主 Handler ---
 
 async def start(message: Message, bot: TeleBot) -> None:
     try:
@@ -80,21 +107,42 @@ async def start(message: Message, bot: TeleBot) -> None:
     except Exception:
         traceback.print_exc()
 
-# 【補回失蹤的 Handler】解決 AttributeError
+# 補回：權限管理相關 Handler
+async def access(message: Message, bot: TeleBot) -> None:
+    if not is_admin(message.from_user.id): return
+    records = await get_approved_access_records()
+    if not records:
+        await bot.reply_to(message, "No approved access records.")
+        return
+    for record in records:
+        text = f"User: {record['username']} ({record['subject_id']})"
+        markup = InlineKeyboardMarkup().add(InlineKeyboardButton("Revoke", callback_data=f"access:revoke:user:{record['subject_id']}"))
+        await bot.send_message(message.chat.id, text, reply_markup=markup)
+
+async def accessrequest(message: Message, bot: TeleBot) -> None:
+    if not is_admin(message.from_user.id): return
+    enabled = not await are_access_requests_enabled()
+    await set_access_request_enabled(enabled)
+    await bot.reply_to(message, f"Access requests are now {'open' if enabled else 'closed'}.")
+
+async def access_callback(call: CallbackQuery, bot: TeleBot) -> None:
+    parts = call.data.split(":")
+    if len(parts) < 4: return
+    _, action, subject_type, subject_id = parts
+    if action == "revoke":
+        await revoke_access(subject_type, int(subject_id), call.from_user.id)
+    else:
+        status = "approved" if action == "approve" else "rejected"
+        await review_access(subject_type, int(subject_id), status, call.from_user.id)
+    await bot.answer_callback_query(call.id, text=f"Done")
+
+# 補回：星座分析指令 Handler
 async def astrology_handler(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot): return
     text = message.text.split()
-    if len(text) < 2: 
-        await bot.reply_to(message, "請輸入格式，例如：/horoscope 雙子座")
-        return
+    if len(text) < 2: return
     sign = text[1]
-    # 這裡的邏輯可以根據需求調整
-    if 'horoscope' in text[0]:
-        prompt = f"請詳細分析「{sign}」本月的整體運勢、事業、財運與感情建議。"
-    else:
-        target = text[2] if len(text) > 2 else "伴侶"
-        prompt = f"請分析「{sign}」與「{target}」的星座配對指數與相處建議。"
-    
+    prompt = f"分析{sign}的這個月運勢。" if 'horoscope' in text[0] else f"分析{sign}與{text[2] if len(text)>2 else '另一半'}的配對。"
     await gemini.gemini_stream(bot, message, prompt)
 
 async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
@@ -120,7 +168,6 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
             _, time_frame, action, sign = data.split(":")
             time_map = {"day": "今日/當天", "month": "本月/當月", "year": "今年/年度"}
             time_text = time_map.get(time_frame, "今日")
-
             prompts = {
                 "astro_daily": f"請分析「{sign}」在「{time_text}」的整體星象走勢與能量變化。",
                 "astro_lucky": f"請提供「{sign}」在「{time_text}」的幸運色、開運數字、貴人星座與方位建議。",
@@ -129,13 +176,10 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
                 "astro_motivation": f"「{sign}」在「{time_text}」缺乏前進動力，請根據星象能量給予振奮人心的激勵與行動指引。",
                 "astro_reflection": f"請給「{sign}」一個適合在「{time_text}」進行的深度心靈練習或自我對話題目。"
             }
-
             if action in prompts:
                 user_id = call.from_user.id
                 user_prompt = prompts[action]
                 await bot.answer_callback_query(call.id, text=f"正在觀測 {sign} 的 {time_text} 能量...")
-                
-                # 執行並接住回傳值以實現話題延續
                 response_text = await gemini.gemini_stream(bot, call.message, user_prompt)
                 if response_text:
                     await save_turn(user_id, user_prompt, response_text)
