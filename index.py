@@ -35,24 +35,29 @@ init_db(options.db_path)
 # 建立 Bot 實例
 bot = AsyncTeleBot(tg_token)
 
-# --- 2. 註冊 Handler (只需註冊一次) ---
-bot.register_message_handler(handlers.start, commands=['start'], pass_bot=True)
+# --- 2. 註冊 Handler (順序極其重要：由上而下匹配) ---
+
+# 1. 優先處理「按鈕選單」指令 (加上 help)
+bot.register_message_handler(handlers.start, commands=['start', 'help'], pass_bot=True)
+
+# 2. 處理特定功能指令
 bot.register_message_handler(handlers.gemini_handler, commands=['gemini'], pass_bot=True)
 bot.register_message_handler(handlers.clear, commands=['clear'], pass_bot=True)
 bot.register_message_handler(handlers.model, commands=['model'], pass_bot=True)
 bot.register_message_handler(handlers.access, commands=['access'], pass_bot=True)
 bot.register_message_handler(handlers.accessrequest, commands=['accessrequest'], pass_bot=True)
-bot.register_message_handler(handlers.gemini_photo_handler, content_types=["photo"], pass_bot=True)
-bot.register_message_handler(handlers.gemini_private_handler, content_types=['text'], pass_bot=True, func=lambda m: m.chat.type == "private")
-bot.register_callback_query_handler(handlers.model_callback, func=lambda c: (c.data or "").startswith("model:"), pass_bot=True)
-bot.register_callback_query_handler(handlers.access_callback, func=lambda c: (c.data or "").startswith("access:"), pass_bot=True)
-# --- [新增] 註冊占星專屬指令 ---
 bot.register_message_handler(handlers.astrology_handler, commands=['horoscope', 'compatibility'], pass_bot=True)
 
-# --- [新增] 註冊按鈕點擊事件 (Callback) ---
-# 注意：這裡要放在原本 model_callback 的附近
-bot.register_callback_query_handler(handlers.model_callback, func=lambda call: call.data.startswith(handlers.MODEL_CALLBACK_PREFIX), pass_bot=True)
-bot.register_callback_query_handler(handlers.astrology_callback, func=lambda call: True, pass_bot=True)
+# 3. 處理圖片 (不影響文字指令)
+bot.register_message_handler(handlers.gemini_photo_handler, content_types=["photo"], pass_bot=True)
+
+# 4. 【關鍵修正】處理私訊純文字對話 (必須放在所有 commands 註冊之後)
+# 如果放在 commands 之前，它會搶走所有的訊息處理權
+bot.register_message_handler(handlers.gemini_private_handler, content_types=['text'], pass_bot=True, func=lambda m: m.chat.type == "private")
+
+# 5. 處理 Callback 按鈕事件 (順序：模型切換優先於萬用匹配)
+bot.register_callback_query_handler(handlers.model_callback, func=lambda c: (c.data or "").startswith("model:"), pass_bot=True)
+bot.register_callback_query_handler(handlers.astrology_callback, func=lambda c: True, pass_bot=True)
 
 # --- 3. Flask App ---
 app = Flask(__name__)
