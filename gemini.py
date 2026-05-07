@@ -1,6 +1,7 @@
 import io
 import time
 import traceback
+import datetime
 from google.genai import errors
 from telebot.types import Message
 from md2tgmd import escape
@@ -35,7 +36,8 @@ def get_user_error_message(error: Exception) -> str:
         return conf["timeout_error_info"]
     return error_info
 
-async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) -> None:
+# 【修正點】返回類型改為 str | None，以便 handlers.py 接收對話內容
+async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) -> str | None:
     # 1. 發送一個正在思考的提示
     sent_message = await bot.reply_to(message, "🤖 Gemini is thinking...")
     
@@ -49,18 +51,20 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
             chat_id=sent_message.chat.id,
             message_id=sent_message.message_id
         )
-        return
+        return None
 
-    # --- 系統時間校正 (放在 session 之後避免衝突) ---
-    import datetime
+    # --- 系統時間校正 ---
     tz_delta = datetime.timedelta(hours=8)
     current_time = datetime.datetime.utcnow() + tz_delta
     current_time_str = current_time.strftime("%Y-%m-%d %H:%M")
     
+    # 記錄原始 prompt 以供儲存（不含 System Time 標籤）
+    original_prompt = contents if isinstance(contents, str) else str(contents)
+    
     if isinstance(contents, str):
-        # 這裡改用較簡潔的標註方式，降低對模型對話判斷的干擾
         contents = f"[System Time: {current_time_str}]\n{contents}"
-    # ------------------------------------------
+
+    full_response = None
 
     async with lock:
         try:
@@ -68,7 +72,7 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
             response = await chat.send_message(contents)
             full_response = response.text
 
-            # 3. 嘗試用 MarkdownV2 格式更新訊息
+            # 3. 更新訊息顯示
             try:
                 await bot.edit_message_text(
                     escape(full_response),
@@ -76,8 +80,8 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
                     message_id=sent_message.message_id,
                     parse_mode="MarkdownV2"
                 )
-            except Exception as e:
-                # 如果 Markdown 解析失敗，改用純文字
+            except Exception:
+                # Markdown 失敗則用純文字
                 await bot.edit_message_text(
                     full_response,
                     chat_id=sent_message.chat.id,
@@ -86,9 +90,13 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
 
             # 4. 儲存對話紀錄
             try:
-                await save_turn(message.from_user.id, contents, full_response)
+                # 這裡建議存 original_prompt，避免紀錄裡全是 System Time 標籤
+                await save_turn(message.from_user.id, original_prompt, full_response)
             except Exception:
                 traceback.print_exc()
+
+            # 【修正點】成功生成後回傳結果
+            return full_response
 
         except Exception as e:
             traceback.print_exc()
@@ -101,3 +109,4 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
                 )
             except Exception:
                 traceback.print_exc()
+            return None # 錯誤時回傳 None
