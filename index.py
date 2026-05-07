@@ -29,7 +29,6 @@ bot.register_message_handler(handlers.astrology_handler, commands=['horoscope', 
 bot.register_message_handler(handlers.gemini_photo_handler, content_types=["photo"], pass_bot=True)
 bot.register_message_handler(handlers.gemini_private_handler, content_types=['text'], pass_bot=True, func=lambda m: m.chat.type == "private")
 
-# 回調 (順序重要)
 bot.register_callback_query_handler(handlers.model_callback, func=lambda c: (c.data or "").startswith("model:"), pass_bot=True)
 bot.register_callback_query_handler(handlers.access_callback, func=lambda c: (c.data or "").startswith("access:"), pass_bot=True)
 bot.register_callback_query_handler(handlers.astrology_callback, func=lambda call: True, pass_bot=True)
@@ -47,17 +46,18 @@ def webhook():
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
         
-        # 核心：使用單一異步入口處理，避免重複創建 loop
         async def main():
-            await bot.process_new_updates([update])
-            # 處理完立刻關閉 session，避免 Aiohttp 報錯
-            session = await bot.get_session()
-            if session: await session.close()
+            try:
+                await bot.process_new_updates([update])
+            finally:
+                # 修正：正確的關閉 session 語法
+                if hasattr(bot, 'session') and bot.session:
+                    await bot.session.close()
 
         try:
+            # Vercel 環境最穩定的執行方式
             asyncio.run(main())
-        except Exception as e:
-            print(f"Loop error: {e}")
+        except Exception:
             traceback.print_exc()
             
         return '', 200
