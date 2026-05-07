@@ -40,7 +40,7 @@ def build_zodiac_keyboard():
     markup.add(*btns)
     return markup
 
-# --- 輔助函數：建立功能鍵盤 (帶入星座) ---
+# --- 輔助函數：建立功能鍵盤 ---
 def build_feature_keyboard(sign):
     markup = InlineKeyboardMarkup(row_width=2)
     btns = [
@@ -56,7 +56,20 @@ def build_feature_keyboard(sign):
     markup.add(*btns)
     return markup
 
-# --- 權限管理相關輔助函數 ---
+# --- 核心新增：建立時間選擇鍵盤 ---
+def build_time_picker_keyboard(action, sign):
+    markup = InlineKeyboardMarkup(row_width=3)
+    # 將功能與星座資訊帶入下一步
+    btns = [
+        InlineKeyboardButton("📅 當日", callback_data=f"time_select:day:{action}:{sign}"),
+        InlineKeyboardButton("📅 當月", callback_data=f"time_select:month:{action}:{sign}"),
+        InlineKeyboardButton("📅 當年", callback_data=f"time_select:year:{action}:{sign}"),
+        InlineKeyboardButton("🔙 返回功能清單", callback_data=f"select_sign:{sign}")
+    ]
+    markup.add(*btns)
+    return markup
+
+# --- 權限管理相關輔助函數 (保持不變) ---
 def build_access_markup(subject_type: str, subject_id: int) -> InlineKeyboardMarkup:
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -106,39 +119,55 @@ async def start(message: Message, bot: TeleBot) -> None:
 async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
     try:
         data = call.data
+        # 1. 選擇星座 或 從時間選擇返回
         if data.startswith("select_sign:"):
             sign = data.split(":")[1]
             text = f"✨ **{sign}** 的專屬解毒劑選單 ✨\n\n請選擇項目："
             await bot.edit_message_text(escape(text), chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=build_feature_keyboard(sign), parse_mode="MarkdownV2")
+        
+        # 2. 返回最開始的星座選擇
         elif data == "nav_back_to_zodiac":
             await bot.edit_message_text("請選擇你的 **星座**：", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=build_zodiac_keyboard())
+        
+        # 3. 核心修改：點擊功能後，先跳轉到「時間選擇」選單
         elif data.startswith("astro_"):
             parts = data.split(":")
-            action = parts[0]
+            if len(parts) < 2: return
+            action, sign = parts[0], parts[1]
             
-            # 核心修正：檢查是否包含星座參數。若無(舊版按鈕)，則導回星座選擇
-            if len(parts) < 2:
-                await bot.answer_callback_query(call.id, text="⚠️ 選單已過期，請重新選擇星座", show_alert=True)
-                await bot.edit_message_text("✨ **請重新選擇星座** ✨", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=build_zodiac_keyboard())
-                return
-
-            sign = parts[1]
-            prompts = {
-                "astro_daily": f"分析「{sign}」今天的整體星象與建議。",
-                "astro_lucky": f"告訴「{sign}」目前的幸運色、數字與方位。",
-                "astro_advice": f"針對「{sign}」的工作、財運、健康、感情提供星象建議。",
-                "astro_stress": f"「{sign}」現在壓力大，請提供舒壓方法。",
-                "astro_motivation": f"「{sign}」缺乏動力，請給予激勵。",
-                "astro_reflection": f"給「{sign}」一個本週心靈練習題目。"
+            action_names = {
+                "astro_daily": "今日星象", "astro_lucky": "幸運指南", "astro_advice": "星象建議",
+                "astro_stress": "舒壓療癒", "astro_motivation": "動力激勵", "astro_reflection": "心靈練習"
             }
+            display_name = action_names.get(action, "星象功能")
+            text = f"🔮 **{sign} - {display_name}**\n\n請選擇您想查看的時間維度："
+            await bot.edit_message_text(escape(text), chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=build_time_picker_keyboard(action, sign), parse_mode="MarkdownV2")
+
+        # 4. 核心修改：處理最終的時間選擇並生成內容
+        elif data.startswith("time_select:"):
+            _, time_frame, action, sign = data.split(":")
+            time_map = {"day": "今日/當天", "month": "本月/當月", "year": "今年/年度"}
+            time_text = time_map.get(time_frame, "今日")
+
+            prompts = {
+                "astro_daily": f"請分析「{sign}」在「{time_text}」的整體星象走勢與能量變化。",
+                "astro_lucky": f"請提供「{sign}」在「{time_text}」的幸運色、開運數字、貴人星座與方位建議。",
+                "astro_advice": f"請針對「{sign}」在「{time_text}」的工作事業、財富投資、健康狀況與感情生活提供具體星象建議。",
+                "astro_stress": f"「{sign}」在「{time_text}」感到壓力較大，請結合當前星象提供合適的療癒舒壓方法與心態調整方案。",
+                "astro_motivation": f"「{sign}」在「{time_text}」缺乏前進動力，請根據星象能量給予振奮人心的激勵與行動指引。",
+                "astro_reflection": f"請給「{sign}」一個適合在「{time_text}」進行的深度心靈練習或自我對話題目。"
+            }
+
             if action in prompts:
-                await bot.answer_callback_query(call.id, text=f"正在為 {sign} 觀測星象...")
+                await bot.answer_callback_query(call.id, text=f"正在觀測 {sign} 的 {time_text} 能量...")
                 await gemini.gemini_stream(bot, call.message, prompts[action])
+
         elif data == "nav_model":
             await send_model_picker(call.message, bot)
     except Exception:
         traceback.print_exc()
 
+# --- 其餘代碼保持不變 ---
 async def gemini_handler(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot): return
     parts = message.text.strip().split(maxsplit=1)
