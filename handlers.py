@@ -22,7 +22,7 @@ from access_control import (
 )
 from utils import clear_history, get_current_model, list_available_models, select_model, save_turn
 
-error_info              =       conf["error_info"]
+error_info             =       conf["error_info"]
 before_generate_info    =       conf["before_generate_info"]
 download_pic_notify     =       conf["download_pic_notify"]
 MODEL_CALLBACK_PREFIX   =       "model:"
@@ -88,10 +88,8 @@ def build_time_picker_keyboard(action, sign, gender, p_sign="", p_gender=""):
         markup.add(InlineKeyboardButton("🔙 返回功能清單", callback_data=f"set_gender:{sign}:{gender}"))
     return markup
 
-# --- 天氣專用鍵盤生成器 (優化版) ---
-
 def build_weather_country_keyboard(sign, gender):
-    """天氣第一層：選擇國家/區域 (新增東南亞佈局)"""
+    """天氣第一層：選擇國家/區域"""
     markup = InlineKeyboardMarkup(row_width=2)
     countries = [
         ("🇹🇼 台灣", "Taiwan"), ("🇨🇳 中國", "China"), ("🇯🇵 日本", "Japan"),
@@ -104,9 +102,8 @@ def build_weather_country_keyboard(sign, gender):
     return markup
 
 def build_weather_city_keyboard(country_code, sign, gender):
-    """天氣第二層：顯示完整城市清單"""
+    """天氣第二層：顯示城市清單"""
     markup = InlineKeyboardMarkup(row_width=3)
-    
     city_db = {
         "Taiwan": [
             ("基隆", "Keelung"), ("台北", "Taipei"), ("新北", "NewTaipei"), ("桃園", "Taoyuan"),
@@ -138,11 +135,9 @@ def build_weather_city_keyboard(country_code, sign, gender):
             ("馬尼拉", "Manila"), ("宿霧", "Cebu"), ("長灘島", "Boracay"), ("巴拉望", "Palawan")
         ]
     }
-
     cities = city_db.get(country_code, [("未知城市", "Unknown")])
     for name, code in cities:
         markup.add(InlineKeyboardButton(name, callback_data=f"weather_type:{code}:{sign}:{gender}"))
-    
     markup.add(InlineKeyboardButton("🔙 返回選國家", callback_data=f"weather_country:{sign}:{gender}"))
     return markup
 
@@ -209,6 +204,7 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
         data = call.data
         chat_id = call.message.chat.id
         msg_id = call.message.message_id
+        user_id = call.from_user.id
 
         if data.startswith("select_sign:"):
             sign = data.split(":")[1]
@@ -219,7 +215,6 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
             text = f"✨ **{sign} ({gender})** 的專屬解毒劑選單 ✨\n\n請選擇您感興趣的項目："
             await bot.edit_message_text(escape(text), chat_id=chat_id, message_id=msg_id, reply_markup=build_feature_keyboard(sign, gender), parse_mode="MarkdownV2")
 
-        # --- 天氣功能流 ---
         elif data.startswith("weather_country:"):
             _, sign, gender = data.split(":")
             await bot.edit_message_text("☀️ **天氣預報服務**\n\n請選擇您所在的區域：", chat_id=chat_id, message_id=msg_id, reply_markup=build_weather_country_keyboard(sign, gender), parse_mode="MarkdownV2")
@@ -243,10 +238,12 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
                 "weekly": f"請分析「{city}」未來一週的天氣趨勢。為「{gender}性{sign}」規劃這週最適合外出的日子。"
             }
             user_prompt = weather_prompts.get(t_type, f"查詢{city}天氣")
+            
+            # 修復點：啟動串流前先將對話紀錄存入，確保 AI 能讀取到 Context
+            await save_turn(user_id, user_prompt, "")
             response = await gemini.gemini_stream(bot, call.message, user_prompt)
-            if response: await save_turn(call.from_user.id, user_prompt, response)
+            if response: await save_turn(user_id, user_prompt, response)
 
-        # --- 星座功能流 ---
         elif data.startswith("astro_"):
             parts = data.split(":")
             action, sign, gender = parts[0], parts[1], parts[2]
@@ -305,8 +302,11 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
                 user_prompt = prompts.get(action, f"請分析{my_sign}的運勢")
 
             await bot.answer_callback_query(call.id, text=f"正在啟動 {t_text} 的能量解析...")
+            
+            # 修復點：按鈕觸發的指令也需要即時寫入資料庫
+            await save_turn(user_id, user_prompt, "")
             response = await gemini.gemini_stream(bot, call.message, user_prompt)
-            if response: await save_turn(call.from_user.id, user_prompt, response)
+            if response: await save_turn(user_id, user_prompt, response)
 
         elif data == "nav_back_to_zodiac":
             await bot.edit_message_text("請選擇您的 **星座**：", chat_id=chat_id, message_id=msg_id, reply_markup=build_zodiac_keyboard("select_sign"), parse_mode="MarkdownV2")
@@ -325,7 +325,10 @@ async def astrology_handler(message: Message, bot: TeleBot) -> None:
     if len(text) < 2: return
     sign = text[1]
     prompt = f"分析{sign}的這個月運勢。" if 'horoscope' in text[0] else f"分析{sign}與{text[2] if len(text)>2 else '另一半'}的配對。"
-    await gemini.gemini_stream(bot, message, prompt)
+    
+    await save_turn(message.from_user.id, prompt, "")
+    response = await gemini.gemini_stream(bot, message, prompt)
+    if response: await save_turn(message.from_user.id, prompt, response)
 
 async def access(message: Message, bot: TeleBot) -> None:
     if not is_admin(message.from_user.id): return
@@ -359,7 +362,11 @@ async def gemini_handler(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot): return
     parts = message.text.strip().split(maxsplit=1)
     if len(parts) < 2: return
-    await gemini.gemini_stream(bot, message, parts[1].strip())
+    user_prompt = parts[1].strip()
+    
+    await save_turn(message.from_user.id, user_prompt, "")
+    response = await gemini.gemini_stream(bot, message, user_prompt)
+    if response: await save_turn(message.from_user.id, user_prompt, response)
 
 async def clear(message: Message, bot: TeleBot) -> None:
     await clear_history(message.from_user.id)
@@ -379,14 +386,22 @@ async def model_callback(call: CallbackQuery, bot: TeleBot) -> None:
 
 async def gemini_private_handler(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot): return
-    await gemini.gemini_stream(bot, message, message.text.strip())
+    user_prompt = message.text.strip()
+    
+    await save_turn(message.from_user.id, user_prompt, "")
+    response = await gemini.gemini_stream(bot, message, user_prompt)
+    if response: await save_turn(message.from_user.id, user_prompt, response)
 
 async def gemini_photo_handler(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot): return
     file = await bot.get_file(message.photo[-1].file_id)
     photo_file = await bot.download_file(file.file_path)
     image = Image.open(io.BytesIO(photo_file))
-    await gemini.gemini_stream(bot, message, [image, message.caption or ""])
+    
+    caption = message.caption or ""
+    await save_turn(message.from_user.id, f"[圖片對話] {caption}", "")
+    response = await gemini.gemini_stream(bot, message, [image, caption])
+    if response: await save_turn(message.from_user.id, f"[圖片對話] {caption}", response)
 
 async def send_model_picker(message: Message, bot: TeleBot) -> None:
     models = await list_available_models()
