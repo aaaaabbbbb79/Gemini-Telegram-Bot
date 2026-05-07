@@ -38,8 +38,12 @@ def get_user_error_message(error: Exception) -> str:
 async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) -> None:
     # 1. 發送一個正在思考的提示
     sent_message = await bot.reply_to(message, "🤖 Gemini is thinking...")
-    from datetime import datetime
-    current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    import datetime
+    # 取得標準時間並手動加上 8 小時 (台灣時區)
+    tz_delta = datetime.timedelta(hours=8)
+    current_time = datetime.datetime.utcnow() + tz_delta
+    current_time_str = current_time.strftime("%Y-%m-%d %H:%M")
+    
     if isinstance(contents, str):
         contents = f"【系統校時：現在是 {current_time_str}，地點在台灣】\n\n{contents}"
     session = await init_user(message.from_user.id)
