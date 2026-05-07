@@ -20,7 +20,6 @@ from access_control import (
     revoke_access,
     set_access_request_enabled,
 )
-# 確保導入 save_turn 才能儲存對話
 from utils import clear_history, get_current_model, list_available_models, select_model, save_turn
 
 error_info              =       conf["error_info"]
@@ -29,7 +28,7 @@ download_pic_notify     =       conf["download_pic_notify"]
 MODEL_CALLBACK_PREFIX   =       "model:"
 ACCESS_CALLBACK_PREFIX  =       "access:"
 
-# --- 輔助函數 (保持不變) ---
+# --- 輔助函數：建立鍵盤 ---
 def build_zodiac_keyboard():
     zodiacs = ["牡羊座", "金牛座", "雙子座", "巨蟹座", "獅子座", "處女座", "天秤座", "天蠍座", "射手座", "摩羯座", "水瓶座", "雙魚座"]
     markup = InlineKeyboardMarkup(row_width=3)
@@ -63,15 +62,7 @@ def build_time_picker_keyboard(action, sign):
     markup.add(*btns)
     return markup
 
-# --- 權限與格式化 (保持不變) ---
-def build_access_markup(subject_type: str, subject_id: int) -> InlineKeyboardMarkup:
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("Approve", callback_data=f"{ACCESS_CALLBACK_PREFIX}approve:{subject_type}:{subject_id}"),
-        InlineKeyboardButton("Reject", callback_data=f"{ACCESS_CALLBACK_PREFIX}reject:{subject_type}:{subject_id}"),
-    )
-    return markup
-
+# --- 核心邏輯與權限 ---
 async def ensure_authorized(message: Message, bot: TeleBot) -> bool:
     subject_type, subject_id = get_access_subject(message)
     if await is_subject_authorized(subject_type, subject_id, message.from_user.id):
@@ -80,7 +71,7 @@ async def ensure_authorized(message: Message, bot: TeleBot) -> bool:
     if status == "approved": return True
     return False
 
-# --- 主 Handler ---
+# --- 指令處理器 (Handlers) ---
 
 async def start(message: Message, bot: TeleBot) -> None:
     try:
@@ -88,6 +79,23 @@ async def start(message: Message, bot: TeleBot) -> None:
         await bot.reply_to(message, escape(welcome_text), reply_markup=build_zodiac_keyboard(), parse_mode="MarkdownV2")
     except Exception:
         traceback.print_exc()
+
+# 【補回失蹤的 Handler】解決 AttributeError
+async def astrology_handler(message: Message, bot: TeleBot) -> None:
+    if not await ensure_authorized(message, bot): return
+    text = message.text.split()
+    if len(text) < 2: 
+        await bot.reply_to(message, "請輸入格式，例如：/horoscope 雙子座")
+        return
+    sign = text[1]
+    # 這裡的邏輯可以根據需求調整
+    if 'horoscope' in text[0]:
+        prompt = f"請詳細分析「{sign}」本月的整體運勢、事業、財運與感情建議。"
+    else:
+        target = text[2] if len(text) > 2 else "伴侶"
+        prompt = f"請分析「{sign}」與「{target}」的星座配對指數與相處建議。"
+    
+    await gemini.gemini_stream(bot, message, prompt)
 
 async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
     try:
@@ -108,7 +116,6 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
             text = f"🔮 **{sign} - {display_name}**\n\n請選擇您想查看的時間維度："
             await bot.edit_message_text(escape(text), chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=build_time_picker_keyboard(action, sign), parse_mode="MarkdownV2")
 
-        # 【核心修正】處理時間選擇並保存話題
         elif data.startswith("time_select:"):
             _, time_frame, action, sign = data.split(":")
             time_map = {"day": "今日/當天", "month": "本月/當月", "year": "今年/年度"}
@@ -128,10 +135,8 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
                 user_prompt = prompts[action]
                 await bot.answer_callback_query(call.id, text=f"正在觀測 {sign} 的 {time_text} 能量...")
                 
-                # 這裡會接住 gemini.py 回傳的內容
+                # 執行並接住回傳值以實現話題延續
                 response_text = await gemini.gemini_stream(bot, call.message, user_prompt)
-                
-                # 如果回傳成功，手動保存這一輪對話到歷史紀錄中
                 if response_text:
                     await save_turn(user_id, user_prompt, response_text)
 
@@ -140,7 +145,6 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
     except Exception:
         traceback.print_exc()
 
-# --- 其餘 Handler ---
 async def gemini_handler(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot): return
     parts = message.text.strip().split(maxsplit=1)
@@ -166,6 +170,13 @@ async def model_callback(call: CallbackQuery, bot: TeleBot) -> None:
 async def gemini_private_handler(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot): return
     await gemini.gemini_stream(bot, message, message.text.strip())
+
+async def gemini_photo_handler(message: Message, bot: TeleBot) -> None:
+    if not await ensure_authorized(message, bot): return
+    file = await bot.get_file(message.photo[-1].file_id)
+    photo_file = await bot.download_file(file.file_path)
+    image = Image.open(io.BytesIO(photo_file))
+    await gemini.gemini_stream(bot, message, [image, message.caption or ""])
 
 async def send_model_picker(message: Message, bot: TeleBot) -> None:
     models = await list_available_models()
