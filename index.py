@@ -33,6 +33,7 @@ init_db(options.db_path)
 bot = AsyncTeleBot(tg_token)
 
 # --- 2. 註冊 Handler ---
+# 訊息類
 bot.register_message_handler(handlers.start, commands=['start', 'help'], pass_bot=True)
 bot.register_message_handler(handlers.gemini_handler, commands=['gemini'], pass_bot=True)
 bot.register_message_handler(handlers.clear, commands=['clear'], pass_bot=True)
@@ -43,7 +44,7 @@ bot.register_message_handler(handlers.astrology_handler, commands=['horoscope', 
 bot.register_message_handler(handlers.gemini_photo_handler, content_types=["photo"], pass_bot=True)
 bot.register_message_handler(handlers.gemini_private_handler, content_types=['text'], pass_bot=True, func=lambda m: m.chat.type == "private")
 
-# 回調註冊
+# 按鈕回調類 (注意順序：特定前綴在前，萬用保底在後)
 bot.register_callback_query_handler(handlers.model_callback, func=lambda c: (c.data or "").startswith("model:"), pass_bot=True)
 bot.register_callback_query_handler(handlers.access_callback, func=lambda c: (c.data or "").startswith("access:"), pass_bot=True)
 bot.register_callback_query_handler(handlers.astrology_callback, func=lambda call: True, pass_bot=True)
@@ -51,7 +52,6 @@ bot.register_callback_query_handler(handlers.astrology_callback, func=lambda cal
 # --- 3. Flask App ---
 app = Flask(__name__)
 
-# 支援 GET 訪問，避免雲端服務健康檢查噴 405
 @app.route('/', methods=['GET'])
 def index():
     return "Bot is running...", 200
@@ -62,19 +62,30 @@ def webhook():
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
         
-        # 核心修正：確保每次處理完都乾淨關閉
-        async def process():
+        # 建立獨立的事件迴圈來處理這次 Webhook 請求
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        async def process_and_close():
             try:
+                # 執行 Bot 邏輯
                 await bot.process_new_updates([update])
+            except Exception:
+                traceback.print_exc()
             finally:
-                # 取得當前 bot 的 session 並關閉，解決 Unclosed client session
+                # 強制關閉 aiohttp session，解決 Unclosed client session 報錯
                 session = await bot.get_session()
-                if session:
+                if session and not session.closed:
                     await session.close()
 
-        asyncio.run(process())
+        try:
+            loop.run_until_complete(process_and_close())
+        finally:
+            loop.close()
+            
         return '', 200
     return 'Forbidden', 403
 
 if __name__ == "__main__":
+    # 本地測試使用
     app.run(host='0.0.0.0', port=5000)
