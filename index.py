@@ -20,7 +20,7 @@ init_db("/tmp/bot.db")
 
 bot = AsyncTeleBot(tg_token)
 
-# --- 2. 註冊所有 Handler ---
+# --- 2. 註冊 Handler ---
 bot.register_message_handler(handlers.start, commands=['start', 'help'], pass_bot=True)
 bot.register_message_handler(handlers.gemini_handler, commands=['gemini'], pass_bot=True)
 bot.register_message_handler(handlers.clear, commands=['clear'], pass_bot=True)
@@ -29,7 +29,6 @@ bot.register_message_handler(handlers.astrology_handler, commands=['horoscope', 
 bot.register_message_handler(handlers.gemini_photo_handler, content_types=["photo"], pass_bot=True)
 bot.register_message_handler(handlers.gemini_private_handler, content_types=['text'], pass_bot=True, func=lambda m: m.chat.type == "private")
 
-# 回調註冊
 bot.register_callback_query_handler(handlers.model_callback, func=lambda c: (c.data or "").startswith("model:"), pass_bot=True)
 bot.register_callback_query_handler(handlers.access_callback, func=lambda c: (c.data or "").startswith("access:"), pass_bot=True)
 bot.register_callback_query_handler(handlers.astrology_callback, func=lambda call: True, pass_bot=True)
@@ -47,12 +46,21 @@ def webhook():
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
         
-        # 使用現有的事件迴圈執行，避免建立新迴圈導致的 500 錯誤
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(bot.process_new_updates([update]))
+        # 針對 Vercel Serverless 的最穩執行方式
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(bot.process_new_updates([update]))
+            loop.close()
+        except Exception as e:
+            print(f"Error processing update: {e}")
+            traceback.print_exc()
         
-        return '', 200
+        return '', 200 # 無論如何都要給 Telegram 200，否則它會一直重試導致 500 迴圈
     return 'Forbidden', 403
+
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=5000)
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5000)
