@@ -56,7 +56,7 @@ def build_feature_keyboard(sign):
     markup.add(*btns)
     return markup
 
-# --- 權限管理相關輔助函數 (修正 AttributeError 的核心) ---
+# --- 權限管理相關輔助函數 ---
 def build_access_markup(subject_type: str, subject_id: int) -> InlineKeyboardMarkup:
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -118,7 +118,7 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
             prompts = {
                 "astro_daily": f"分析「{sign}」今天的整體星象與建議。",
                 "astro_lucky": f"告訴「{sign}」目前的幸運色、數字與方位。",
-                "astro_advice": f"針對「{sign}」的工作、財運、感情提供星象建議。",
+                "astro_advice": f"針對「{sign}」的工作、財運、健康、感情提供星象建議。",
                 "astro_stress": f"「{sign}」現在壓力大，請提供舒壓方法。",
                 "astro_motivation": f"「{sign}」缺乏動力，請給予激勵。",
                 "astro_reflection": f"給「{sign}」一個本週心靈練習題目。"
@@ -140,4 +140,68 @@ async def gemini_handler(message: Message, bot: TeleBot) -> None:
 async def astrology_handler(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot): return
     text = message.text.split()
-    if
+    if len(text) < 2: return
+    # 修正：確保索引不會超出範圍
+    sign = text[1]
+    prompt = f"分析{sign}的這個月運勢。" if 'horoscope' in text[0] else f"分析{sign}與{text[2] if len(text)>2 else '另一半'}的配對。"
+    await gemini.gemini_stream(bot, message, prompt)
+
+async def access(message: Message, bot: TeleBot) -> None:
+    if not is_admin(message.from_user.id): return
+    records = await get_approved_access_records()
+    if not records:
+        await bot.reply_to(message, "No approved access records.")
+        return
+    for record in records:
+        text = f"User: {record['username']} ({record['subject_id']})"
+        markup = InlineKeyboardMarkup().add(InlineKeyboardButton("Revoke", callback_data=f"access:revoke:user:{record['subject_id']}"))
+        await bot.send_message(message.chat.id, text, reply_markup=markup)
+
+async def accessrequest(message: Message, bot: TeleBot) -> None:
+    if not is_admin(message.from_user.id): return
+    enabled = not await are_access_requests_enabled()
+    await set_access_request_enabled(enabled)
+    await bot.reply_to(message, f"Access requests are now {'open' if enabled else 'closed'}.")
+
+async def access_callback(call: CallbackQuery, bot: TeleBot) -> None:
+    _, action, subject_type, subject_id = call.data.split(":")
+    if action == "revoke":
+        await revoke_access(subject_type, int(subject_id), call.from_user.id)
+    else:
+        status = "approved" if action == "approve" else "rejected"
+        await review_access(subject_type, int(subject_id), status, call.from_user.id)
+    await bot.answer_callback_query(call.id, text=f"Done")
+
+async def clear(message: Message, bot: TeleBot) -> None:
+    await clear_history(message.from_user.id)
+    await bot.reply_to(message, "Cleared")
+
+async def model(message: Message, bot: TeleBot) -> None:
+    await send_model_picker(message, bot)
+
+async def model_callback(call: CallbackQuery, bot: TeleBot) -> None:
+    try:
+        model_index = int(call.data.removeprefix(MODEL_CALLBACK_PREFIX))
+        models = await list_available_models()
+        model_name = await select_model(call.from_user.id, models[model_index])
+        await bot.edit_message_text(f"Model: {model_name}", chat_id=call.message.chat.id, message_id=call.message.message_id)
+    except:
+        traceback.print_exc()
+
+async def gemini_private_handler(message: Message, bot: TeleBot) -> None:
+    if not await ensure_authorized(message, bot): return
+    await gemini.gemini_stream(bot, message, message.text.strip())
+
+async def gemini_photo_handler(message: Message, bot: TeleBot) -> None:
+    if not await ensure_authorized(message, bot): return
+    file = await bot.get_file(message.photo[-1].file_id)
+    photo_file = await bot.download_file(file.file_path)
+    image = Image.open(io.BytesIO(photo_file))
+    await gemini.gemini_stream(bot, message, [image, message.caption or ""])
+
+async def send_model_picker(message: Message, bot: TeleBot) -> None:
+    models = await list_available_models()
+    markup = InlineKeyboardMarkup()
+    for i, m in enumerate(models):
+        markup.add(InlineKeyboardButton(m, callback_data=f"{MODEL_CALLBACK_PREFIX}{i}"))
+    await bot.send_message(message.chat.id, "Select model:", reply_markup=markup)
