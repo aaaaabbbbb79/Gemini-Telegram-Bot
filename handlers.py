@@ -30,7 +30,7 @@ ACCESS_CALLBACK_PREFIX = "access:"
 # --- 核心邏輯：確保 30 分鐘後依然能延續對話 ---
 async def execute_and_save(user_id, bot, message, prompt):
     """
-    強制先寫入資料庫再呼叫 AI，解決非同步 IO 導致的記憶斷層。
+    解決非同步 IO 延遲導致 AI 讀不到最新歷史的問題。
     """
     await save_turn(user_id, prompt, "")
     await asyncio.sleep(0.1) 
@@ -45,12 +45,32 @@ async def start(message: Message, bot: TeleBot) -> None:
     await bot.reply_to(message, escape(welcome), reply_markup=build_zodiac_keyboard(), parse_mode="MarkdownV2")
 
 async def model(message: Message, bot: TeleBot) -> None:
-    """修復 AttributeError: 確保 index.py 能找到此屬性"""
+    """處理 /model 指令"""
     await send_model_picker(message, bot)
 
 async def clear(message: Message, bot: TeleBot) -> None:
     await clear_history(message.from_user.id)
     await bot.reply_to(message, "✅ 對話記憶已清除。")
+
+# --- 修復 AttributeError: 補上 index.py 第 28 行需要的 astrology_handler ---
+async def astrology_handler(message: Message, bot: TeleBot) -> None:
+    """處理 /horoscope 與 /compatibility 指令"""
+    if not await ensure_authorized(message, bot): return
+    text = message.text.split()
+    if len(text) < 2:
+        await bot.reply_to(message, "請在指令後加上星座，例如：`/horoscope 牡羊座`", parse_mode="Markdown")
+        return
+    
+    command = text[0].lower()
+    sign = text[1]
+    
+    if 'horoscope' in command:
+        prompt = f"請分析「{sign}」的今日運勢。"
+    else:
+        partner = text[2] if len(text) > 2 else "另一半"
+        prompt = f"請分析「{sign}」與「{partner}」的星座配對建議。"
+    
+    await execute_and_save(message.from_user.id, bot, message, prompt)
 
 # --- 2. 鍵盤組件 (包含完整縣市清單) ---
 
@@ -169,18 +189,18 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
 
         elif data.startswith("weather_final:"):
             _, t_type, city, sign, gender = data.split(":")
-            prompt = f"請以專家占星師身份，分析「{city}」的天氣 ({t_type})。並針對「{gender}性{sign}」給予今日的穿搭建議與出門提醒。"
-            await bot.answer_callback_query(call.id, text="正在調取數據...")
+            prompt = f"分析「{city}」的天氣 ({t_type})。請針對「{gender}性{sign}」給予建議。"
+            await bot.answer_callback_query(call.id, text="讀取數據中...")
             await execute_and_save(u_id, bot, call.message, prompt)
 
         elif data.startswith("astro_"):
             action, sign, gender = data.split(":")
-            await bot.edit_message_text("🔮 請選擇欲查看的時間維度：", c_id, m_id, reply_markup=build_time_picker_keyboard(action, sign, gender))
+            await bot.edit_message_text("🔮 請選擇時間維度：", c_id, m_id, reply_markup=build_time_picker_keyboard(action, sign, gender))
 
         elif data.startswith("time_select:"):
             _, t_frame, action, sign, gender = data.split(":")
-            prompt = f"請詳細分析「{gender}性{sign}」在「{t_frame}」的「{action}」運勢與建議。"
-            await bot.answer_callback_query(call.id, text="解析中...")
+            prompt = f"請詳細分析「{gender}性{sign}」在「{t_frame}」的「{action}」狀況。"
+            await bot.answer_callback_query(call.id, text="命運解析中...")
             await execute_and_save(u_id, bot, call.message, prompt)
 
         elif data == "nav_back_to_zodiac":
@@ -235,5 +255,5 @@ async def gemini_photo_handler(message: Message, bot: TeleBot) -> None:
         await save_turn(message.from_user.id, f"[圖片對話] {caption}", response)
 
 async def ensure_authorized(message: Message, bot: TeleBot) -> bool:
-    # 權限校驗橋接
+    # 預留權限校驗
     return True
