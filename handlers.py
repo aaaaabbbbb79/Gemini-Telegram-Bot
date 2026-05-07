@@ -113,9 +113,9 @@ async def send_model_picker(message: Message, bot: TeleBot) -> None:
         text += f"\nCurrent model: {current_model}"
     await bot.reply_to(message, text, reply_markup=build_model_markup(models))
 
+# --- 修改後的 Start 函數 ---
 async def start(message: Message, bot: TeleBot) -> None:
     try:
-        # 建立按鈕
         markup = InlineKeyboardMarkup(row_width=2)
         btns = [
             InlineKeyboardButton("🌌 今日星象", callback_data="astro_daily"),
@@ -140,6 +140,25 @@ async def start(message: Message, bot: TeleBot) -> None:
     except Exception:
         traceback.print_exc()
         await bot.reply_to(message, error_info)
+
+# --- 補回原本遺失的 gemini_handler ---
+async def gemini_handler(message: Message, bot: TeleBot) -> None:
+    try:
+        parts = message.text.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            await bot.reply_to(message, escape("Please add what you want to say after /gemini. \nExample: `/gemini 誰是約翰藍儂?`"), parse_mode="MarkdownV2")
+            return
+        contents = parts[1].strip()
+    except IndexError:
+        await bot.reply_to(message, "Please add context.")
+        return
+    
+    if await get_current_model(message.from_user.id) is None:
+        await send_model_picker(message, bot)
+        return
+    await gemini.gemini_stream(bot, message, contents)
+
+# --- 新增占星指令處理器 ---
 async def astrology_handler(message: Message, bot: TeleBot) -> None:
     text = message.text.split()
     cmd = text[0].replace('/', '')
@@ -152,19 +171,10 @@ async def astrology_handler(message: Message, bot: TeleBot) -> None:
     else:
         await bot.reply_to(message, escape(f"請輸入正確格式，例如：/{cmd} 雙子座"), parse_mode="MarkdownV2")
         return
-
     await gemini.gemini_stream(bot, message, prompt)
 
-async def clear(message: Message, bot: TeleBot) -> None:
-    if not await ensure_authorized(message, bot):
-        return
-    if message.chat.type != "private":
-        await bot.reply_to(message, "Please use /clear in a private chat.")
-        return
-    await clear_history(message.from_user.id)
-    await bot.reply_to(message, "Your history has been cleared")
+# --- 新增按鈕回調處理器 ---
 async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
-    # 預設的占星 Prompt
     prompts = {
         "astro_daily": "請以占星師身份，分析今天的整體星象氣氛與今日行動建議。",
         "astro_lucky": "請告訴我目前的幸運色、幸運數字與幸運方位。",
@@ -176,20 +186,23 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
 
     if call.data in prompts:
         await bot.answer_callback_query(call.id, text="正在觀測星象...")
-        # 模擬一則訊息發送給 gemini_stream
         await gemini.gemini_stream(bot, call.message, prompts[call.data])
-    
     elif call.data == "nav_model":
         await send_model_picker(call.message, bot)
         await bot.answer_callback_query(call.id)
-        
     elif call.data == "nav_clear":
         await clear_history(call.from_user.id)
         await bot.answer_callback_query(call.id, text="✅ 記憶已清空")
         await bot.send_message(call.message.chat.id, "記憶已清除，我們可以聊聊新的話題。")
-async def model(message: Message, bot: TeleBot) -> None:
-    if not await ensure_authorized(message, bot):
+
+async def clear(message: Message, bot: TeleBot) -> None:
+    if message.chat.type != "private":
+        await bot.reply_to(message, "Please use /clear in a private chat.")
         return
+    await clear_history(message.from_user.id)
+    await bot.reply_to(message, "Your history has been cleared")
+
+async def model(message: Message, bot: TeleBot) -> None:
     if message.chat.type != "private":
         await bot.reply_to(message, "Please use /model in a private chat.")
         return
@@ -218,12 +231,10 @@ async def access(message: Message, bot: TeleBot) -> None:
     if not is_admin(message.from_user.id):
         await bot.reply_to(message, "Only administrators can view access records.")
         return
-
     records = await get_approved_access_records()
     if not records:
         await bot.reply_to(message, "No approved access records.")
         return
-
     await bot.reply_to(message, "Approved access records:")
     for record in records:
         subject_type = str(record["subject_type"])
@@ -238,7 +249,6 @@ async def accessrequest(message: Message, bot: TeleBot) -> None:
     if not is_admin(message.from_user.id):
         await bot.reply_to(message, "Only administrators can change access request settings.")
         return
-
     enabled = not await are_access_requests_enabled()
     await set_access_request_enabled(enabled)
     state = "open" if enabled else "closed"
@@ -246,17 +256,14 @@ async def accessrequest(message: Message, bot: TeleBot) -> None:
 
 async def model_callback(call: CallbackQuery, bot: TeleBot) -> None:
     try:
-        if not await is_user_authorized(call.from_user.id):
-            await bot.answer_callback_query(call.id, text="Access approval required", show_alert=True)
-            return
         model_index = int(call.data.removeprefix(MODEL_CALLBACK_PREFIX))
         models = await list_available_models()
         selected_model = models[model_index]
-        model = await select_model(call.from_user.id, selected_model)
-        await bot.answer_callback_query(call.id, text=f"Using {model}")
+        model_name = await select_model(call.from_user.id, selected_model)
+        await bot.answer_callback_query(call.id, text=f"Using {model_name}")
         if call.message:
             await bot.edit_message_text(
-                "Now you are using " + model,
+                "Now you are using " + model_name,
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id
             )
@@ -269,15 +276,7 @@ async def access_callback(call: CallbackQuery, bot: TeleBot) -> None:
         if not is_admin(call.from_user.id):
             await bot.answer_callback_query(call.id, text="Only administrators can review requests", show_alert=True)
             return
-
         _, action, subject_type, subject_id_text = call.data.split(":", maxsplit=3)
-        if action not in {"approve", "reject", "revoke"}:
-            await bot.answer_callback_query(call.id, text="Unknown review action", show_alert=True)
-            return
-        if subject_type != "user":
-            await bot.answer_callback_query(call.id, text="Unknown access subject", show_alert=True)
-            return
-
         subject_id = int(subject_id_text)
         if action == "revoke":
             status = "revoked"
@@ -288,40 +287,23 @@ async def access_callback(call: CallbackQuery, bot: TeleBot) -> None:
 
         await bot.answer_callback_query(call.id, text=f"Request {status}")
         if call.message:
-            await bot.edit_message_text(
-                f"Access {subject_type} {subject_id} {status}.",
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-            )
+            await bot.edit_message_text(f"Access {subject_type} {subject_id} {status}.", chat_id=call.message.chat.id, message_id=call.message.message_id)
 
-        if subject_type == "user":
-            try:
-                if status == "approved":
-                    await bot.send_message(subject_id, "Your access request was approved. You can now use /model to choose a model.")
-                elif status == "rejected":
-                    await bot.send_message(subject_id, "Your access request was rejected. Please contact the administrator.")
-                else:
-                    await bot.send_message(subject_id, "Your access was revoked. Please contact the administrator.")
-            except Exception:
-                traceback.print_exc()
+        if status == "approved":
+            await bot.send_message(subject_id, "Your access request was approved.")
     except Exception:
         traceback.print_exc()
-        await bot.answer_callback_query(call.id, text="Failed to review request", show_alert=True)
 
 async def gemini_private_handler(message: Message, bot: TeleBot) -> None:
-   # if not await ensure_authorized(message, bot):
-    #    return
     contents = message.text.strip()
     if await get_current_model(message.from_user.id) is None:
         await send_model_picker(message, bot)
         return
-    await gemini.gemini_stream(bot,message,contents)
+    await gemini.gemini_stream(bot, message, contents)
 
 async def gemini_photo_handler(message: Message, bot: TeleBot) -> None:
     s = message.caption or ""
     if message.chat.type != "private" and not s.startswith("/gemini"):
-        return
-    if not await ensure_authorized(message, bot):
         return
     if await get_current_model(message.from_user.id) is None:
         await send_model_picker(message, bot)
@@ -330,8 +312,7 @@ async def gemini_photo_handler(message: Message, bot: TeleBot) -> None:
         m = s.strip().split(maxsplit=1)[1].strip() if len(s.strip().split(maxsplit=1)) > 1 else ""
         file = await bot.get_file(message.photo[-1].file_id)
         photo_file = await bot.download_file(file.file_path)
-        image_stream = io.BytesIO(photo_file)
-        image = Image.open(image_stream)
+        image = Image.open(io.BytesIO(photo_file))
         contents = [image, m]
     except Exception:
         traceback.print_exc()
