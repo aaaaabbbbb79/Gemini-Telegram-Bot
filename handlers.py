@@ -38,7 +38,7 @@ def build_zodiac_keyboard(prefix="select_sign", extra_data=""):
     for z in zodiacs:
         cb_data = f"{prefix}:{z}"
         if extra_data:
-            cb_data += f format_access_request":{extra_data}"
+            cb_data += f":{extra_data}"
         btns.append(InlineKeyboardButton(z, callback_data=cb_data))
     markup.add(*btns)
     return markup
