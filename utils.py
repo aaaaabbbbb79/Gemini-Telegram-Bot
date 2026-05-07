@@ -25,7 +25,6 @@ model_cache: dict[str, object] = {
     "updated_at": 0.0,
 }
 MODEL_CACHE_TTL = 3600
-# 縮減排除清單，確保 3.1 預覽版不會被誤殺
 EXCLUDED_MODEL_NAME_PARTS = (
     "computer-use",
     "customtools",
@@ -44,11 +43,9 @@ def get_client() -> genai.Client:
     return client
 
 def _normalize_model_name(model_name: str) -> str:
-    # 移除 models/ 前綴，讓 SDK 內部自行決定 API 版本 (v1 或 v1beta)
     return model_name.replace("models/", "")
 
 def _is_chat_model(model_name: str, supported_actions: list[str]) -> bool:
-    # 擴大識別範圍，確保 gemini-2.0, 2.5, 3, 3.1 都能通過
     if not model_name.startswith("gemini-"):
         return False
     if "generateContent" not in supported_actions:
@@ -58,7 +55,6 @@ def _is_chat_model(model_name: str, supported_actions: list[str]) -> bool:
 def _fetch_available_models() -> list[str]:
     models: list[str] = []
     try:
-        # 動態抓取 Google AI Studio 釋出的所有可用模型
         for model in get_client().models.list():
             name = _normalize_model_name(model.name)
             supported_actions = getattr(model, "supported_actions", []) or []
@@ -66,7 +62,6 @@ def _fetch_available_models() -> list[str]:
                 models.append(name)
     except Exception as e:
         print(f"Fetch models error: {e}")
-        # 保底清單：包含你截圖中需要的核心模型
         return ["gemini-3.1-flash-lite-preview", "gemini-1.5-flash-latest", "gemini-2.0-flash-exp"]
     return sorted(set(models))
 
@@ -74,7 +69,6 @@ async def list_available_models(force_refresh: bool = False) -> list[str]:
     now = time()
     if not force_refresh and model_cache["models"] and (now - model_cache["updated_at"] < MODEL_CACHE_TTL):
         return model_cache["models"]
-
     models = await to_thread(_fetch_available_models)
     model_cache["models"] = models
     model_cache["updated_at"] = now
@@ -84,32 +78,59 @@ async def init_user(user_id: int) -> UserSession:
     if user_id not in chat_dict:
         lock = Lock()
         model = await to_thread(get_user_model, user_id)
-        
-        # 預設改為你常用的 3.1 Flash 預覽版標籤
         if not model:
             model = "gemini-3.1-flash-lite-preview"
             await to_thread(set_user_model, user_id, model)
-
         history = await to_thread(load_history, user_id, conf["max_history_turns"])
-        # 重要：使用 SDK 的 aio 介面並確保模型名稱正確
         chat = get_client().aio.chats.create(model=model, history=history)
-        
-        chat_dict[user_id] = {
-            "chat": chat,
-            "lock": lock,
-            "model": model,
-        }
+        chat_dict[user_id] = {"chat": chat, "lock": lock, "model": model}
     return chat_dict[user_id]
 
 async def select_model(user_id: int, new_model: str) -> str:
     session = await init_user(user_id)
     async with session["lock"]:
         history = await to_thread(load_history, user_id, conf["max_history_turns"])
-        # 切換模型時重新建立 AsyncChat 對象
         new_chat = get_client().aio.chats.create(model=new_model, history=history)
         await to_thread(set_user_model, user_id, new_model)
         session["chat"] = new_chat
         session["model"] = new_model
         return new_model
 
-# ... 其他部分保持不變 (get_current_model, clear_history, save_turn 等) ...
+async def get_current_model(user_id: int) -> str | None:
+    session = await init_user(user_id)
+    return session["model"]
+
+async def clear_history(user_id: int) -> None:
+    session = await init_user(user_id)
+    async with session["lock"]:
+        model = session["model"]
+        if model is None:
+            session["chat"] = None
+            return
+        await to_thread(clear_user_history, user_id)
+        new_chat = get_client().aio.chats.create(model=model)
+        session["chat"] = new_chat
+
+def _normalize_contents_for_history(contents: str | list[Any]) -> str:
+    if isinstance(contents, str):
+        return contents
+    caption = ""
+    for item in contents:
+        if isinstance(item, str):
+            caption = item.strip()
+            break
+    return f"[Image] {caption}" if caption else "[Image]"
+
+# --- 補回關鍵零件：save_turn ---
+async def save_turn(user_id: int, contents: str | list[Any], model_text: str) -> None:
+    if not model_text or not model_text.strip():
+        return
+    session = await init_user(user_id)
+    model = session["model"]
+    if model is None:
+        return
+    user_text = _normalize_contents_for_history(contents)
+    await to_thread(append_turn, user_id, model, user_text, model_text, conf["max_history_turns"])
+    # 確保對話紀錄同步更新至 AsyncChat 對象
+    history = await to_thread(load_history, user_id, conf["max_history_turns"])
+    session["chat"] = get_client().aio.chats.create(model=model, history=history)
