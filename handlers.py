@@ -31,11 +31,7 @@ ACCESS_CALLBACK_PREFIX  =       "access:"
 # --- 輔助函數：鍵盤生成器 ---
 
 def build_zodiac_keyboard(prefix="select_sign", extra_data=""):
-    """
-    生成星座選擇器。
-    prefix: callback 的開頭 (例如 select_sign 或 match_p_sign)
-    extra_data: 需要往後傳遞的舊數據 (例如 我的星座:我的性別)
-    """
+    """生成星座選擇器"""
     zodiacs = ["牡羊座", "金牛座", "雙子座", "巨蟹座", "獅子座", "處女座", "天秤座", "天蠍座", "射手座", "摩羯座", "水瓶座", "雙魚座"]
     markup = InlineKeyboardMarkup(row_width=3)
     btns = []
@@ -48,12 +44,8 @@ def build_zodiac_keyboard(prefix="select_sign", extra_data=""):
     return markup
 
 def build_gender_keyboard(sign, prefix="set_gender", extra_data=""):
-    """
-    生成性別選擇器。
-    prefix: user_gender (選自己) 或 match_p_gender (選對方)
-    """
+    """生成性別選擇器"""
     markup = InlineKeyboardMarkup(row_width=2)
-    # 分別為 男、女
     for g in ["男", "女"]:
         cb_data = f"{prefix}:{sign}:{g}"
         if extra_data:
@@ -62,9 +54,8 @@ def build_gender_keyboard(sign, prefix="set_gender", extra_data=""):
     return markup
 
 def build_feature_keyboard(sign, gender):
-    """主功能選單，包含星座配對按鈕"""
+    """主功能選單"""
     markup = InlineKeyboardMarkup(row_width=2)
-    # 這裡的 callback 會帶上自己的星座和性別
     btns = [
         InlineKeyboardButton("🌌 今日星象", callback_data=f"astro_daily:{sign}:{gender}"),
         InlineKeyboardButton("❤️ 星座配對", callback_data=f"match_start:{sign}:{gender}"),
@@ -82,18 +73,17 @@ def build_feature_keyboard(sign, gender):
 def build_time_picker_keyboard(action, sign, gender, p_sign="", p_gender=""):
     """
     時間維度選擇器。
-    如果是普通功能，只會有 sign/gender；如果是配對，會有 p_sign/p_gender。
+    新增『此生』選項，並優化為兩列排版。
     """
-    markup = InlineKeyboardMarkup(row_width=3)
-    # 組合數據：時間:功能:我星:我性:他星:他性
+    markup = InlineKeyboardMarkup(row_width=2)
     suffix = f"{action}:{sign}:{gender}:{p_sign}:{p_gender}"
     btns = [
         InlineKeyboardButton("📅 當日", callback_data=f"time_select:day:{suffix}"),
         InlineKeyboardButton("📅 當月", callback_data=f"time_select:month:{suffix}"),
         InlineKeyboardButton("📅 當年", callback_data=f"time_select:year:{suffix}"),
+        InlineKeyboardButton("♾️ 此生", callback_data=f"time_select:life:{suffix}") # 新功能
     ]
     markup.add(*btns)
-    # 返回按鈕判斷
     if p_sign:
         markup.add(InlineKeyboardButton("🔙 返回選對象性別", callback_data=f"match_p_sign:{p_sign}:{sign}:{gender}"))
     else:
@@ -108,7 +98,7 @@ def build_access_markup(subject_type: str, subject_id: int) -> InlineKeyboardMar
     )
     return markup
 
-# --- 權限與管理邏輯 (保持不變) ---
+# --- 權限與管理邏輯 ---
 
 def format_access_request(message: Message) -> str:
     user = message.from_user
@@ -153,18 +143,15 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
         chat_id = call.message.chat.id
         msg_id = call.message.message_id
 
-        # 1. 選擇自己星座後 -> 詢問自己性別
         if data.startswith("select_sign:"):
             sign = data.split(":")[1]
             await bot.edit_message_text(f"好的，你是 **{sign}**。那請教你的性別是？", chat_id=chat_id, message_id=msg_id, reply_markup=build_gender_keyboard(sign, "set_gender"), parse_mode="MarkdownV2")
         
-        # 2. 選擇自己性別後 -> 進入主功能選單
         elif data.startswith("set_gender:"):
             _, sign, gender = data.split(":")
             text = f"✨ **{sign} ({gender})** 的專屬解毒劑選單 ✨\n\n請選擇您感興趣的項目："
             await bot.edit_message_text(escape(text), chat_id=chat_id, message_id=msg_id, reply_markup=build_feature_keyboard(sign, gender), parse_mode="MarkdownV2")
 
-        # 3. 點選普通星象功能 -> 詢問時間維度
         elif data.startswith("astro_"):
             parts = data.split(":")
             action, sign, gender = parts[0], parts[1], parts[2]
@@ -173,49 +160,59 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
             text = f"🔮 **{sign}({gender}) - {display_name}**\n\n請選擇您想查看的時間維度："
             await bot.edit_message_text(escape(text), chat_id=chat_id, message_id=msg_id, reply_markup=build_time_picker_keyboard(action, sign, gender), parse_mode="MarkdownV2")
 
-        # 4. [配對流] 點選星座配對 -> 詢問對象星座
         elif data.startswith("match_start:"):
             _, my_sign, my_gender = data.split(":")
             text = f"❤️ **星座配對**\n\n您的設定：{my_sign}({my_gender})\n\n請選擇 **對方的星座**："
             await bot.edit_message_text(escape(text), chat_id=chat_id, message_id=msg_id, reply_markup=build_zodiac_keyboard("match_p_sign", f"{my_sign}:{my_gender}"), parse_mode="MarkdownV2")
 
-        # 5. [配對流] 選擇對象星座後 -> 詢問對象性別
         elif data.startswith("match_p_sign:"):
-            parts = data.split(":") # match_p_sign : p_sign : my_sign : my_gender
+            parts = data.split(":")
             _, p_sign, my_sign, my_gender = parts
             text = f"❤️ **星座配對**\n\n您：{my_sign}({my_gender})\n對象：{p_sign}\n\n請選擇 **對方的性別**："
             await bot.edit_message_text(escape(text), chat_id=chat_id, message_id=msg_id, reply_markup=build_gender_keyboard(p_sign, "match_p_gender", f"{my_sign}:{my_gender}"), parse_mode="MarkdownV2")
 
-        # 6. [配對流] 選擇對象性別後 -> 詢問時間維度
         elif data.startswith("match_p_gender:"):
-            parts = data.split(":") # match_p_gender : p_sign : p_gender : my_sign : my_gender
+            parts = data.split(":")
             _, p_sign, p_gender, my_sign, my_gender = parts
             text = f"❤️ **星座配對**\n\n您：{my_sign}({my_gender})\n對象：{p_sign}({p_gender})\n\n請選擇想查看的配對時效："
             await bot.edit_message_text(escape(text), chat_id=chat_id, message_id=msg_id, reply_markup=build_time_picker_keyboard("match_final", my_sign, my_gender, p_sign, p_gender), parse_mode="MarkdownV2")
 
-        # 7. 最終執行：發送 Prompt 給 Gemini
         elif data.startswith("time_select:"):
-            # 結構: time_select : timeframe : action : my_sign : my_gender : p_sign : p_gender
             parts = data.split(":")
             _, time_frame, action, my_sign, my_gender, p_sign, p_gender = parts
             
-            time_map = {"day": "今日/當天", "month": "本月/當月", "year": "今年/年度"}
+            # 更新 time_map，納入 life
+            time_map = {"day": "今日/當天", "month": "本月/當月", "year": "今年/年度", "life": "這輩子/此生/本命"}
             t_text = time_map.get(time_frame, "今日")
 
             if action == "match_final":
-                user_prompt = f"請詳細分析一個「{my_gender}性{my_sign}」與一個「{p_gender}性{p_sign}」在「{t_text}」的星座配對運勢。包含默契指數、溝通建議、可能的摩擦點以及開運相處小撇步。"
+                if time_frame == "life":
+                    user_prompt = f"請深入分析一個「{my_gender}性{my_sign}」與一個「{p_gender}性{p_sign}」這輩子的「宿命緣分」。包含長期的相處課題、兩人是否適合共同生活、靈魂契合度以及白頭偕老的關鍵建議。"
+                else:
+                    user_prompt = f"請詳細分析一個「{my_gender}性{my_sign}」與一個「{p_gender}性{p_sign}」在「{t_text}」的星座配對運勢。包含默契指數、溝通建議以及相處小撇步。"
             else:
-                prompts = {
-                    "astro_daily": f"請分析「{my_gender}性{my_sign}」在「{t_text}」的整體星象走勢與能量變化。",
-                    "astro_lucky": f"請為「{my_gender}性{my_sign}」提供在「{t_text}」的幸運指南（幸運色、開運物、方位）。",
-                    "astro_advice": f"請針對「{my_gender}性{my_sign}」在「{t_text}」的事業、財運與感情給予具體建議。",
-                    "astro_stress": f"身為「{my_gender}性{my_sign}」，在「{t_text}」壓力大時該如何透過星象能量療癒？",
-                    "astro_motivation": f"給予「{my_gender}性{my_sign}」在「{t_text}」的激勵行動指引。",
-                    "astro_reflection": f"適合「{my_gender}性{my_sign}」在「{t_text}」進行的心靈反思題目。"
-                }
+                if time_frame == "life":
+                    # 針對個人一輩子的本命解析指令
+                    prompts = {
+                        "astro_daily": f"請從星象格局分析「{my_gender}性{my_sign}」這輩子的「生命核心目標」與命運基調。",
+                        "astro_lucky": f"請解析「{my_gender}性{my_sign}」此生的「貴人格局」與能夠帶來長期好運的核心特質。",
+                        "astro_advice": f"請針對「{my_gender}性{my_sign}」這輩子在「事業、財富與感情」這三大維度的重要人生建議。",
+                        "astro_stress": f"身為「{my_gender}性{my_sign}」這輩子最容易遇到的「心靈坎坷」是什麼？該如何調整來化解？",
+                        "astro_motivation": f"什麼樣的人生願景最能激發「{my_gender}性{my_sign}」一輩子的行動力？",
+                        "astro_reflection": f"請給「{my_gender}性{my_sign}」一個這輩子都值得持續反思、深刻探索的「生命命題」。"
+                    }
+                else:
+                    prompts = {
+                        "astro_daily": f"請分析「{my_gender}性{my_sign}」在「{t_text}」的整體星象走勢與能量變化。",
+                        "astro_lucky": f"請為「{my_gender}性{my_sign}」提供在「{t_text}」的幸運指南。",
+                        "astro_advice": f"請針對「{my_gender}性{my_sign}」在「{t_text}」的具體建議。",
+                        "astro_stress": f"身為「{my_gender}性{my_sign}」，在「{t_text}」壓力大時該如何療癒？",
+                        "astro_motivation": f"給予「{my_gender}性{my_sign}」在「{t_text}」的激勵行動指引。",
+                        "astro_reflection": f"適合「{my_gender}性{my_sign}」在「{t_text}」進行的心靈反思題目。"
+                    }
                 user_prompt = prompts.get(action, f"請分析{my_sign}的運勢")
 
-            await bot.answer_callback_query(call.id, text="正在觀測能量星圖...")
+            await bot.answer_callback_query(call.id, text=f"正在啟動 {t_text} 的能量解析...")
             response = await gemini.gemini_stream(bot, call.message, user_prompt)
             if response:
                 await save_turn(call.from_user.id, user_prompt, response)
@@ -229,7 +226,7 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
     except Exception:
         traceback.print_exc()
 
-# --- 其餘指令與邏輯 (保持不變) ---
+# --- 其餘指令與邏輯 ---
 
 async def astrology_handler(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot): return
