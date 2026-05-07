@@ -46,7 +46,8 @@ def get_client() -> genai.Client:
     return client
 
 def _normalize_model_name(model_name: str) -> str:
-    return model_name.removeprefix("models/")
+    # 修正：確保模型名稱不帶 models/ 前綴，讓 SDK 自動補全或手動處理
+    return model_name.replace("models/", "")
 
 def _is_chat_model(model_name: str, supported_actions: list[str]) -> bool:
     if not model_name.startswith("gemini-"):
@@ -57,12 +58,18 @@ def _is_chat_model(model_name: str, supported_actions: list[str]) -> bool:
 
 def _fetch_available_models() -> list[str]:
     models: list[str] = []
-    for model in get_client().models.list():
-        name = _normalize_model_name(model.name)
-        supported_actions = getattr(model, "supported_actions", []) or []
-        if not _is_chat_model(name, supported_actions):
-            continue
-        models.append(name)
+    # 這裡的 list 請求有時會因為 API 版本噴錯，加上 try-except 保護
+    try:
+        for model in get_client().models.list():
+            name = _normalize_model_name(model.name)
+            supported_actions = getattr(model, "supported_actions", []) or []
+            if not _is_chat_model(name, supported_actions):
+                continue
+            models.append(name)
+    except Exception as e:
+        print(f"Fetch models error: {e}")
+        # 如果無法獲取清單，至少回傳一個保底模型
+        return ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest"]
     return sorted(set(models))
 
 async def list_available_models(force_refresh: bool = False) -> list[str]:
@@ -89,11 +96,10 @@ async def init_user(user_id: int) -> UserSession:
         lock = Lock()
         model = await to_thread(get_user_model, user_id)
         
-        # --- 修改開始：如果找不到模型，設定一個預設值 ---
+        # --- 修正：使用具備後綴的模型名稱，避免 404 ---
         if not model:
-            model = "gemini-1.5-flash"  # 你可以改成你最喜歡的模型名稱
-            await to_thread(set_user_model, user_id, model) # 同步存入資料庫
-        # ------------------------------------------
+            model = "gemini-1.5-flash-latest"  
+            await to_thread(set_user_model, user_id, model)
 
         history = await to_thread(load_history, user_id, conf["max_history_turns"])
         chat = get_client().aio.chats.create(model=model, history=history)
@@ -106,15 +112,6 @@ async def init_user(user_id: int) -> UserSession:
     return chat_dict[user_id]
 
 async def select_model(user_id: int, new_model: str) -> str:
-    """Select user's chat model, keeping history when a chat already exists.
-    
-    Args:
-        user_id (int): user's id
-        new_model (str): model to use
-
-    Returns:
-        str: chat's current model
-    """
     session = await init_user(user_id)
     lock = session["lock"]
 
@@ -124,7 +121,6 @@ async def select_model(user_id: int, new_model: str) -> str:
         await to_thread(set_user_model, user_id, new_model)
         session["chat"] = new_chat
         session["model"] = new_model
-
         return new_model
 
 async def get_current_model(user_id: int) -> str | None:
@@ -132,14 +128,6 @@ async def get_current_model(user_id: int) -> str | None:
     return session["model"]
 
 async def clear_history(user_id: int) -> None:
-    """clear user's history
-    
-    Args:
-        user_id (int): user's id
-
-    Returns:
-        None
-    """
     session = await init_user(user_id)
     lock = session["lock"]
 
