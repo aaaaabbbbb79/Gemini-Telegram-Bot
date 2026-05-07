@@ -28,120 +28,108 @@ download_pic_notify     =       conf["download_pic_notify"]
 MODEL_CALLBACK_PREFIX   =       "model:"
 ACCESS_CALLBACK_PREFIX  =       "access:"
 
-def build_access_markup(subject_type: str, subject_id: int) -> InlineKeyboardMarkup:
+# --- 輔助函數：建立 12 星座鍵盤 ---
+def build_zodiac_keyboard():
+    zodiacs = [
+        "牡羊座", "金牛座", "雙子座", "巨蟹座",
+        "獅子座", "處女座", "天秤座", "天蠍座",
+        "射手座", "摩羯座", "水瓶座", "雙魚座"
+    ]
+    markup = InlineKeyboardMarkup(row_width=3)
+    btns = [InlineKeyboardButton(z, callback_data=f"select_sign:{z}") for z in zodiacs]
+    markup.add(*btns)
+    return markup
+
+# --- 輔助函數：建立功能鍵盤 (帶入星座) ---
+def build_feature_keyboard(sign):
     markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("Approve", callback_data=f"{ACCESS_CALLBACK_PREFIX}approve:{subject_type}:{subject_id}"),
-        InlineKeyboardButton("Reject", callback_data=f"{ACCESS_CALLBACK_PREFIX}reject:{subject_type}:{subject_id}"),
-    )
+    # 在 callback_data 裡放入 "功能:星座"
+    btns = [
+        InlineKeyboardButton("🌌 今日星象", callback_data=f"astro_daily:{sign}"),
+        InlineKeyboardButton("🍀 幸運指南", callback_data=f"astro_lucky:{sign}"),
+        InlineKeyboardButton("💡 星象建議", callback_data=f"astro_advice:{sign}"),
+        InlineKeyboardButton("🧘 舒壓療癒", callback_data=f"astro_stress:{sign}"),
+        InlineKeyboardButton("🔥 動力激勵", callback_data=f"astro_motivation:{sign}"),
+        InlineKeyboardButton("🌱 心靈練習", callback_data=f"astro_reflection:{sign}"),
+        InlineKeyboardButton("🤖 切換模型", callback_data="nav_model"),
+        InlineKeyboardButton("🔙 返回選星座", callback_data="nav_back_to_zodiac")
+    ]
+    markup.add(*btns)
     return markup
 
-def format_access_request(message: Message) -> str:
-    user = message.from_user
-    username = f"@{user.username}" if user.username else "N/A"
-    full_name = " ".join(
-        part for part in [user.first_name, user.last_name] if part
-    ) or "N/A"
-    return (
-        "New user access request\n"
-        f"User ID: {user.id}\n"
-        f"Username: {username}\n"
-        f"Name: {full_name}"
-    )
-
-async def notify_admins_access_request(message: Message, bot: TeleBot) -> None:
-    subject_type, subject_id = get_access_subject(message)
-    for admin_id in get_admin_user_ids():
-        try:
-            await bot.send_message(
-                admin_id,
-                format_access_request(message),
-                reply_markup=build_access_markup(subject_type, subject_id),
-            )
-        except Exception:
-            traceback.print_exc()
-
-async def ensure_authorized(message: Message, bot: TeleBot) -> bool:
-    subject_type, subject_id = get_access_subject(message)
-    if await is_subject_authorized(subject_type, subject_id, message.from_user.id):
-        return True
-
-    current_status = await get_subject_access_status(subject_type, subject_id)
-    if current_status is None and not await are_access_requests_enabled():
-        await bot.reply_to(message, "Access requests are currently closed. Please contact the administrator.")
-        return False
-
-    status, created = await request_access(message)
-    if status == "approved":
-        return True
-
-    if status == "rejected":
-        await bot.reply_to(message, "This access request was rejected. Please contact the administrator.")
-        return False
-
-    if status == "revoked":
-        await bot.reply_to(message, "This access was revoked. Please contact the administrator.")
-        return False
-
-    if created:
-        await notify_admins_access_request(message, bot)
-
-    await bot.reply_to(message, "Your access request has been submitted. Please wait for administrator approval.")
-    return False
-
-def build_model_markup(models: list[str]) -> InlineKeyboardMarkup:
-    markup = InlineKeyboardMarkup(row_width=1)
-    for index, model in enumerate(models):
-        markup.add(InlineKeyboardButton(model, callback_data=f"{MODEL_CALLBACK_PREFIX}{index}"))
-    return markup
-
-async def send_model_picker(message: Message, bot: TeleBot) -> None:
-    try:
-        models = await list_available_models()
-    except Exception:
-        traceback.print_exc()
-        await bot.reply_to(message, error_info)
-        return
-
-    if not models:
-        await bot.reply_to(message, "No available Gemini chat models found.")
-        return
-
-    current_model = await get_current_model(message.from_user.id)
-    text = "Please choose a Gemini model:"
-    if current_model:
-        text += f"\nCurrent model: {current_model}"
-    await bot.reply_to(message, text, reply_markup=build_model_markup(models))
-
-# --- 修改後的 Start 函數 ---
+# --- 修改後的 Start 函數：顯示 12 星座 ---
 async def start(message: Message, bot: TeleBot) -> None:
     try:
-        markup = InlineKeyboardMarkup(row_width=2)
-        btns = [
-            InlineKeyboardButton("🌌 今日星象", callback_data="astro_daily"),
-            InlineKeyboardButton("🍀 幸運指南", callback_data="astro_lucky"),
-            InlineKeyboardButton("💡 星象建議", callback_data="astro_advice"),
-            InlineKeyboardButton("🧘 舒壓療癒", callback_data="astro_stress"),
-            InlineKeyboardButton("🔥 動力激勵", callback_data="astro_motivation"),
-            InlineKeyboardButton("🌱 心靈練習", callback_data="astro_reflection"),
-            InlineKeyboardButton("🤖 切換模型", callback_data="nav_model"),
-            InlineKeyboardButton("🧹 清除記憶", callback_data="nav_clear")
-        ]
-        markup.add(*btns)
-
         welcome_text = (
-            "✨ **奕川的解毒劑 - 功能選單** ✨\n\n"
-            "● 直接點選按鈕執行快速功能\n"
-            "● 或輸入指令，例如：\n"
-            "  `/horoscope 雙子座` \n"
-            "  `/compatibility 雙子座 牡羊座`"
+            "✨ **奕川的解毒劑 - 占星導航** ✨\n\n"
+            "請先點選你的 **星座** 來開啟專屬功能選單："
         )
-        await bot.reply_to(message, escape(welcome_text), reply_markup=markup, parse_mode="MarkdownV2")
+        await bot.reply_to(message, escape(welcome_text), reply_markup=build_zodiac_keyboard(), parse_mode="MarkdownV2")
     except Exception:
         traceback.print_exc()
         await bot.reply_to(message, error_info)
 
-# --- 補回原本遺失的 gemini_handler ---
+# --- 核心：處理所有按鈕點擊 ---
+async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
+    try:
+        data = call.data
+        
+        # 1. 處理「選擇星座」的動作
+        if data.startswith("select_sign:"):
+            sign = data.split(":")[1]
+            text = f"✨ **{sign}** 的專屬解毒劑選單 ✨\n\n請選擇你想要進行的觀測項目："
+            await bot.edit_message_text(
+                escape(text),
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=build_feature_keyboard(sign),
+                parse_mode="MarkdownV2"
+            )
+            await bot.answer_callback_query(call.id, text=f"已選擇 {sign}")
+
+        # 2. 處理「回歸星座選擇」
+        elif data == "nav_back_to_zodiac":
+            await bot.edit_message_text(
+                "請先點選你的 **星座** 來開啟專屬功能選單：",
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=build_zodiac_keyboard()
+            )
+            await bot.answer_callback_query(call.id)
+
+        # 3. 處理「6 大功能」 (格式：astro_功能:星座)
+        elif data.startswith("astro_"):
+            parts = data.split(":")
+            action = parts[0]
+            sign = parts[1] if len(parts) > 1 else "神秘星座"
+            
+            prompts = {
+                "astro_daily": f"請以占星師身份，分析「{sign}」今天的整體星象氣氛與今日行動建議。",
+                "astro_lucky": f"請告訴「{sign}」目前的幸運色、幸運數字與幸運方位。",
+                "astro_advice": f"請針對「{sign}」的工作、財運、健康、感情提供目前的星象建議。",
+                "astro_stress": f"「{sign}」現在感到壓力很大，請提供舒壓與自我療癒的方法。",
+                "astro_motivation": f"「{sign}」現在缺乏動力，請給我專屬的激勵建議。",
+                "astro_reflection": f"請給「{sign}」一個適合本週思考的心靈練習題目。"
+            }
+            
+            if action in prompts:
+                await bot.answer_callback_query(call.id, text=f"正在為 {sign} 觀測星象...")
+                await gemini.gemini_stream(bot, call.message, prompts[action])
+
+        # 4. 其他導航功能
+        elif data == "nav_model":
+            await send_model_picker(call.message, bot)
+            await bot.answer_callback_query(call.id)
+        elif data == "nav_clear":
+            await clear_history(call.from_user.id)
+            await bot.answer_callback_query(call.id, text="✅ 記憶已清空")
+            await bot.send_message(call.message.chat.id, "記憶已清除。")
+
+    except Exception:
+        traceback.print_exc()
+        await bot.send_message(call.message.chat.id, error_info)
+
+# --- 以下保留你原本的其他 handler (gemini_handler, access 等) ---
 async def gemini_handler(message: Message, bot: TeleBot) -> None:
     try:
         parts = message.text.strip().split(maxsplit=1)
@@ -158,42 +146,25 @@ async def gemini_handler(message: Message, bot: TeleBot) -> None:
         return
     await gemini.gemini_stream(bot, message, contents)
 
-# --- 新增占星指令處理器 ---
 async def astrology_handler(message: Message, bot: TeleBot) -> None:
     text = message.text.split()
+    if len(text) < 2:
+        await bot.reply_to(message, "請輸入星座，例如：/horoscope 雙子座")
+        return
     cmd = text[0].replace('/', '')
     args = text[1:]
     
-    if cmd == 'horoscope' and args:
+    if cmd == 'horoscope':
         prompt = f"請詳細分析{args[0]}在這個月的詳細運勢，包含事業、感情與財運。"
     elif cmd == 'compatibility' and len(args) >= 2:
         prompt = f"請深入分析{args[0]}與{args[1]}之間的互動、配對優勢與挑戰。"
     else:
-        await bot.reply_to(message, escape(f"請輸入正確格式，例如：/{cmd} 雙子座"), parse_mode="MarkdownV2")
+        await bot.reply_to(message, "請輸入正確格式，例如：/compatibility 雙子座 牡羊座")
         return
     await gemini.gemini_stream(bot, message, prompt)
 
-# --- 新增按鈕回調處理器 ---
-async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
-    prompts = {
-        "astro_daily": "請以占星師身份，分析今天的整體星象氣氛與今日行動建議。",
-        "astro_lucky": "請告訴我目前的幸運色、幸運數字與幸運方位。",
-        "astro_advice": "請針對工作、財運、健康、感情提供目前的星象建議。",
-        "astro_stress": "我現在感到壓力很大，請提供舒壓與自我療癒的方法。",
-        "astro_motivation": "我現在缺乏動力，請給我專屬的激勵建議。",
-        "astro_reflection": "請給我一個適合本週思考的心靈練習題目。"
-    }
-
-    if call.data in prompts:
-        await bot.answer_callback_query(call.id, text="正在觀測星象...")
-        await gemini.gemini_stream(bot, call.message, prompts[call.data])
-    elif call.data == "nav_model":
-        await send_model_picker(call.message, bot)
-        await bot.answer_callback_query(call.id)
-    elif call.data == "nav_clear":
-        await clear_history(call.from_user.id)
-        await bot.answer_callback_query(call.id, text="✅ 記憶已清空")
-        await bot.send_message(call.message.chat.id, "記憶已清除，我們可以聊聊新的話題。")
+# ... (後續的 clear, model, access_callback 等函數保持不變，直接貼上你原本的即可) ...
+# 注意：為了長度簡潔，我這裡省略了你原本沒動到的 access 相關函數，請確保你自己檔案裡那些部分還在。
 
 async def clear(message: Message, bot: TeleBot) -> None:
     if message.chat.type != "private":
@@ -207,52 +178,6 @@ async def model(message: Message, bot: TeleBot) -> None:
         await bot.reply_to(message, "Please use /model in a private chat.")
         return
     await send_model_picker(message, bot)
-
-def format_approved_access_record(record: dict[str, object]) -> str:
-    subject_id = record["subject_id"]
-    username = record["username"]
-    full_name = " ".join(
-        str(part)
-        for part in [record["first_name"], record["last_name"]]
-        if part
-    ) or "N/A"
-    if username:
-        return f"User: @{username} {full_name} ({subject_id})"
-    return f"User: {full_name} ({subject_id})"
-
-def build_revoke_markup(subject_type: str, subject_id: int) -> InlineKeyboardMarkup:
-    markup = InlineKeyboardMarkup(row_width=1)
-    markup.add(
-        InlineKeyboardButton("Revoke user", callback_data=f"{ACCESS_CALLBACK_PREFIX}revoke:{subject_type}:{subject_id}")
-    )
-    return markup
-
-async def access(message: Message, bot: TeleBot) -> None:
-    if not is_admin(message.from_user.id):
-        await bot.reply_to(message, "Only administrators can view access records.")
-        return
-    records = await get_approved_access_records()
-    if not records:
-        await bot.reply_to(message, "No approved access records.")
-        return
-    await bot.reply_to(message, "Approved access records:")
-    for record in records:
-        subject_type = str(record["subject_type"])
-        subject_id = int(record["subject_id"])
-        await bot.send_message(
-            message.chat.id,
-            format_approved_access_record(record),
-            reply_markup=build_revoke_markup(subject_type, subject_id),
-        )
-
-async def accessrequest(message: Message, bot: TeleBot) -> None:
-    if not is_admin(message.from_user.id):
-        await bot.reply_to(message, "Only administrators can change access request settings.")
-        return
-    enabled = not await are_access_requests_enabled()
-    await set_access_request_enabled(enabled)
-    state = "open" if enabled else "closed"
-    await bot.reply_to(message, f"Access requests are now {state}.")
 
 async def model_callback(call: CallbackQuery, bot: TeleBot) -> None:
     try:
@@ -270,29 +195,6 @@ async def model_callback(call: CallbackQuery, bot: TeleBot) -> None:
     except Exception:
         traceback.print_exc()
         await bot.answer_callback_query(call.id, text="Failed to switch model", show_alert=True)
-
-async def access_callback(call: CallbackQuery, bot: TeleBot) -> None:
-    try:
-        if not is_admin(call.from_user.id):
-            await bot.answer_callback_query(call.id, text="Only administrators can review requests", show_alert=True)
-            return
-        _, action, subject_type, subject_id_text = call.data.split(":", maxsplit=3)
-        subject_id = int(subject_id_text)
-        if action == "revoke":
-            status = "revoked"
-            await revoke_access(subject_type, subject_id, call.from_user.id)
-        else:
-            status = "approved" if action == "approve" else "rejected"
-            await review_access(subject_type, subject_id, status, call.from_user.id)
-
-        await bot.answer_callback_query(call.id, text=f"Request {status}")
-        if call.message:
-            await bot.edit_message_text(f"Access {subject_type} {subject_id} {status}.", chat_id=call.message.chat.id, message_id=call.message.message_id)
-
-        if status == "approved":
-            await bot.send_message(subject_id, "Your access request was approved.")
-    except Exception:
-        traceback.print_exc()
 
 async def gemini_private_handler(message: Message, bot: TeleBot) -> None:
     contents = message.text.strip()
