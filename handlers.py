@@ -1,5 +1,6 @@
 import traceback
 import io
+import asyncio
 from PIL import Image
 import gemini as gemini
 from telebot.async_telebot import AsyncTeleBot as TeleBot
@@ -28,33 +29,50 @@ download_pic_notify     =       conf["download_pic_notify"]
 MODEL_CALLBACK_PREFIX   =       "model:"
 ACCESS_CALLBACK_PREFIX  =       "access:"
 
+# --- 核心邏輯：執行並同步存檔以維持 30 分鐘後的記憶 ---
+
+async def execute_and_save(user_id, bot, message, prompt, image=None):
+    """
+    確保所有生成的內容都會被記錄到資料庫，解決 30 分鐘後記憶遺失的問題。
+    """
+    # 1. 預存 User 的 Prompt (確保歷史紀錄連貫)
+    save_prompt = prompt if not image else f"[圖片對話] {prompt}"
+    await save_turn(user_id, save_prompt, "")
+    
+    # 短暫延遲確保資料庫寫入順序
+    await asyncio.sleep(0.1)
+    
+    # 2. 呼叫 Gemini 生成
+    content = [image, prompt] if image else prompt
+    response = await gemini.gemini_stream(bot, message, content)
+    
+    # 3. 存入 AI 的回答
+    if response:
+        await save_turn(user_id, save_prompt, response)
+    return response
+
 # --- 輔助函數：鍵盤生成器 ---
 
 def build_zodiac_keyboard(prefix="select_sign", extra_data=""):
-    """生成星座選擇器"""
     zodiacs = ["牡羊座", "金牛座", "雙子座", "巨蟹座", "獅子座", "處女座", "天秤座", "天蠍座", "射手座", "摩羯座", "水瓶座", "雙魚座"]
     markup = InlineKeyboardMarkup(row_width=3)
     btns = []
     for z in zodiacs:
         cb_data = f"{prefix}:{z}"
-        if extra_data:
-            cb_data += f":{extra_data}"
+        if extra_data: cb_data += f":{extra_data}"
         btns.append(InlineKeyboardButton(z, callback_data=cb_data))
     markup.add(*btns)
     return markup
 
 def build_gender_keyboard(sign, prefix="set_gender", extra_data=""):
-    """生成性別選擇器"""
     markup = InlineKeyboardMarkup(row_width=2)
     for g in ["男", "女"]:
         cb_data = f"{prefix}:{sign}:{g}"
-        if extra_data:
-            cb_data += f":{extra_data}"
+        if extra_data: cb_data += f":{extra_data}"
         markup.add(InlineKeyboardButton(g, callback_data=cb_data))
     return markup
 
 def build_feature_keyboard(sign, gender):
-    """主功能選單"""
     markup = InlineKeyboardMarkup(row_width=2)
     btns = [
         InlineKeyboardButton("🌌 今日星象", callback_data=f"astro_daily:{sign}:{gender}"),
@@ -72,7 +90,6 @@ def build_feature_keyboard(sign, gender):
     return markup
 
 def build_time_picker_keyboard(action, sign, gender, p_sign="", p_gender=""):
-    """時間維度選擇器"""
     markup = InlineKeyboardMarkup(row_width=2)
     suffix = f"{action}:{sign}:{gender}:{p_sign}:{p_gender}"
     btns = [
@@ -88,10 +105,7 @@ def build_time_picker_keyboard(action, sign, gender, p_sign="", p_gender=""):
         markup.add(InlineKeyboardButton("🔙 返回功能清單", callback_data=f"set_gender:{sign}:{gender}"))
     return markup
 
-# --- 天氣專用鍵盤生成器 (優化版) ---
-
 def build_weather_country_keyboard(sign, gender):
-    """天氣第一層：選擇國家/區域 (新增東南亞佈局)"""
     markup = InlineKeyboardMarkup(row_width=2)
     countries = [
         ("🇹🇼 台灣", "Taiwan"), ("🇨🇳 中國", "China"), ("🇯🇵 日本", "Japan"),
@@ -104,50 +118,24 @@ def build_weather_country_keyboard(sign, gender):
     return markup
 
 def build_weather_city_keyboard(country_code, sign, gender):
-    """天氣第二層：顯示完整城市清單"""
     markup = InlineKeyboardMarkup(row_width=3)
-    
     city_db = {
-        "Taiwan": [
-            ("基隆", "Keelung"), ("台北", "Taipei"), ("新北", "NewTaipei"), ("桃園", "Taoyuan"),
-            ("新竹市", "HsinchuCity"), ("新竹縣", "HsinchuCounty"), ("苗栗", "Miaoli"), ("台中", "Taichung"),
-            ("彰化", "Changhua"), ("南投", "Nantou"), ("雲林", "Yunlin"), ("嘉義市", "ChiayiCity"),
-            ("嘉義縣", "ChiayiCounty"), ("台南", "Tainan"), ("高雄", "Kaohsiung"), ("屏東", "Pingtung"),
-            ("宜蘭", "Yilan"), ("花蓮", "Hualien"), ("台東", "Taitung"), ("澎湖", "Penghu"),
-            ("金門", "Kinmen"), ("連江", "Lienchiang")
-        ],
-        "China": [
-            ("菏澤", "Heze"), ("濟南", "Jinan"), ("青島", "Qingdao"), ("北京", "Beijing"),
-            ("上海", "Shanghai"), ("廣州", "Guangzhou"), ("深圳", "Shenzhen"), ("杭州", "Hangzhou")
-        ],
-        "Japan": [
-            ("東京", "Tokyo"), ("大阪", "Osaka"), ("京都", "Kyoto"), ("福岡", "Fukuoka"),
-            ("沖繩", "Okinawa"), ("札幌", "Sapporo")
-        ],
+        "Taiwan": [("基隆", "Keelung"), ("台北", "Taipei"), ("新北", "NewTaipei"), ("桃園", "Taoyuan"), ("新竹市", "HsinchuCity"), ("新竹縣", "HsinchuCounty"), ("苗栗", "Miaoli"), ("台中", "Taichung"), ("彰化", "Changhua"), ("南投", "Nantou"), ("雲林", "Yunlin"), ("嘉義市", "ChiayiCity"), ("嘉義縣", "ChiayiCounty"), ("台南", "Tainan"), ("高雄", "Kaohsiung"), ("屏東", "Pingtung"), ("宜蘭", "Yilan"), ("花蓮", "Hualien"), ("台東", "Taitung"), ("澎湖", "Penghu"), ("金門", "Kinmen"), ("連江", "Lienchiang")],
+        "China": [("菏澤", "Heze"), ("濟南", "Jinan"), ("青島", "Qingdao"), ("北京", "Beijing"), ("上海", "Shanghai"), ("廣州", "Guangzhou"), ("深圳", "Shenzhen"), ("杭州", "Hangzhou")],
+        "Japan": [("東京", "Tokyo"), ("大阪", "Osaka"), ("京都", "Kyoto"), ("福岡", "Fukuoka"), ("沖繩", "Okinawa"), ("札幌", "Sapporo")],
         "Singapore": [("新加坡", "Singapore")],
-        "Malaysia": [
-            ("吉隆坡", "KualaLumpur"), ("檳城", "Penang"), ("新山", "JohorBahru"), ("馬六甲", "Malacca")
-        ],
-        "Thailand": [
-            ("曼谷", "Bangkok"), ("清邁", "ChiangMai"), ("普吉島", "Phuket"), ("蘇梅島", "KohSamui")
-        ],
-        "Vietnam": [
-            ("胡志明市", "HCMC"), ("河內", "Hanoi"), ("峴港", "DaNang"), ("芽莊", "NhaTrang")
-        ],
-        "Philippines": [
-            ("馬尼拉", "Manila"), ("宿霧", "Cebu"), ("長灘島", "Boracay"), ("巴拉望", "Palawan")
-        ]
+        "Malaysia": [("吉隆坡", "KualaLumpur"), ("檳城", "Penang"), ("新山", "JohorBahru"), ("馬六甲", "Malacca")],
+        "Thailand": [("曼谷", "Bangkok"), ("清邁", "ChiangMai"), ("普吉島", "Phuket"), ("蘇梅島", "KohSamui")],
+        "Vietnam": [("胡志明市", "HCMC"), ("河內", "Hanoi"), ("峴港", "DaNang"), ("芽莊", "NhaTrang")],
+        "Philippines": [("馬尼拉", "Manila"), ("宿霧", "Cebu"), ("長灘島", "Boracay"), ("巴拉望", "Palawan")]
     }
-
     cities = city_db.get(country_code, [("未知城市", "Unknown")])
     for name, code in cities:
         markup.add(InlineKeyboardButton(name, callback_data=f"weather_type:{code}:{sign}:{gender}"))
-    
     markup.add(InlineKeyboardButton("🔙 返回選國家", callback_data=f"weather_country:{sign}:{gender}"))
     return markup
 
 def build_weather_type_keyboard(city_code, sign, gender):
-    """天氣第三層：維度選擇"""
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
         InlineKeyboardButton("🌈 本日整體天氣 (精簡)", callback_data=f"weather_final:today:{city_code}:{sign}:{gender}"),
@@ -207,6 +195,7 @@ async def start(message: Message, bot: TeleBot) -> None:
 async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
     try:
         data = call.data
+        u_id = call.from_user.id
         chat_id = call.message.chat.id
         msg_id = call.message.message_id
 
@@ -219,7 +208,6 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
             text = f"✨ **{sign} ({gender})** 的專屬解毒劑選單 ✨\n\n請選擇您感興趣的項目："
             await bot.edit_message_text(escape(text), chat_id=chat_id, message_id=msg_id, reply_markup=build_feature_keyboard(sign, gender), parse_mode="MarkdownV2")
 
-        # --- 天氣功能流 ---
         elif data.startswith("weather_country:"):
             _, sign, gender = data.split(":")
             await bot.edit_message_text("☀️ **天氣預報服務**\n\n請選擇您所在的區域：", chat_id=chat_id, message_id=msg_id, reply_markup=build_weather_country_keyboard(sign, gender), parse_mode="MarkdownV2")
@@ -242,11 +230,8 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
                 "hourly": f"請詳細列出「{city}」今天逐小時的天氣變化。針對「{gender}性{sign}」的活動規律，給予準確的降雨與溫差提醒。",
                 "weekly": f"請分析「{city}」未來一週的天氣趨勢。為「{gender}性{sign}」規劃這週最適合外出的日子。"
             }
-            user_prompt = weather_prompts.get(t_type, f"查詢{city}天氣")
-            response = await gemini.gemini_stream(bot, call.message, user_prompt)
-            if response: await save_turn(call.from_user.id, user_prompt, response)
+            await execute_and_save(u_id, bot, call.message, weather_prompts.get(t_type, f"查詢{city}天氣"))
 
-        # --- 星座功能流 ---
         elif data.startswith("astro_"):
             parts = data.split(":")
             action, sign, gender = parts[0], parts[1], parts[2]
@@ -284,29 +269,26 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
                 else:
                     user_prompt = f"請詳細分析一個「{my_gender}性{my_sign}」與一個「{p_gender}性{p_sign}」在「{t_text}」的星座配對運勢。包含默契指數、溝通建議以及相處小撇步。"
             else:
-                if time_frame == "life":
-                    prompts = {
-                        "astro_daily": f"請從星象格局分析「{my_gender}性{my_sign}」這輩子的「生命核心目標」與命運基調。",
-                        "astro_lucky": f"請解析「{my_gender}性{my_sign}」此生的「貴人格局」與能夠帶來長期好運的核心特質。",
-                        "astro_advice": f"請針對「{my_gender}性{my_sign}」這輩子在「事業、財富與感情」這三大維度的重要人生建議。",
-                        "astro_stress": f"身為「{my_gender}性{my_sign}」這輩子最容易遇到的「心靈坎坷」是什麼？該如何調整來化解？",
-                        "astro_motivation": f"什麼樣的人生願景最能激發「{my_gender}性{my_sign}」一輩子的行動力？",
-                        "astro_reflection": f"請給「{my_gender}性{my_sign}」一個這輩子都值得持續反思、深刻探索的「生命命題」。"
-                    }
-                else:
-                    prompts = {
-                        "astro_daily": f"請分析「{my_gender}性{my_sign}」在「{t_text}」的整體星象走勢與能量變化。",
-                        "astro_lucky": f"請為「{my_gender}性{my_sign}」提供在「{t_text}」的幸運指南。",
-                        "astro_advice": f"請針對「{my_gender}性{my_sign}」在「{t_text}」的具體建議。",
-                        "astro_stress": f"身為「{my_gender}性{my_sign}」，在「{t_text}」壓力大時該如何療癒？",
-                        "astro_motivation": f"給予「{my_gender}性{my_sign}」在「{t_text}」的激勵行動指引。",
-                        "astro_reflection": f"適合「{my_gender}性{my_sign}」在「{t_text}」進行的心靈反思題目。"
-                    }
-                user_prompt = prompts.get(action, f"請分析{my_sign}的運勢")
+                prompts_life = {
+                    "astro_daily": f"請從星象格局分析「{my_gender}性{my_sign}」這輩子的「生命核心目標」與命運基調。",
+                    "astro_lucky": f"請解析「{my_gender}性{my_sign}」此生的「貴人格局」與能夠帶來長期好運的核心特質。",
+                    "astro_advice": f"請針對「{my_gender}性{my_sign}」這輩子在「事業、財富與感情」這三大維度的重要人生建議。",
+                    "astro_stress": f"身為「{my_gender}性{my_sign}」這輩子最容易遇到的「心靈坎坷」是什麼？該如何調整來化解？",
+                    "astro_motivation": f"什麼樣的人生願景最能激發「{my_gender}性{my_sign}」一輩子的行動力？",
+                    "astro_reflection": f"請給「{my_gender}性{my_sign}」一個這輩子都值得持續反思、深刻探索的「生命命題」。"
+                }
+                prompts_normal = {
+                    "astro_daily": f"請分析「{my_gender}性{my_sign}」在「{t_text}」的整體星象走勢與能量變化。",
+                    "astro_lucky": f"請為「{my_gender}性{my_sign}」提供在「{t_text}」的幸運指南。",
+                    "astro_advice": f"請針對「{my_gender}性{my_sign}」在「{t_text}」的具體建議。",
+                    "astro_stress": f"身為「{my_gender}性{my_sign}」，在「{t_text}」壓力大時該如何療癒？",
+                    "astro_motivation": f"給予「{my_gender}性{my_sign}」在「{t_text}」的激勵行動指引。",
+                    "astro_reflection": f"適合「{my_gender}性{my_sign}」在「{t_text}」進行的心靈反思題目。"
+                }
+                user_prompt = prompts_life.get(action) if time_frame == "life" else prompts_normal.get(action)
 
             await bot.answer_callback_query(call.id, text=f"正在啟動 {t_text} 的能量解析...")
-            response = await gemini.gemini_stream(bot, call.message, user_prompt)
-            if response: await save_turn(call.from_user.id, user_prompt, response)
+            await execute_and_save(u_id, bot, call.message, user_prompt or f"請分析{my_sign}的運勢")
 
         elif data == "nav_back_to_zodiac":
             await bot.edit_message_text("請選擇您的 **星座**：", chat_id=chat_id, message_id=msg_id, reply_markup=build_zodiac_keyboard("select_sign"), parse_mode="MarkdownV2")
@@ -317,7 +299,7 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
     except Exception:
         traceback.print_exc()
 
-# --- 其餘指令與邏輯 ---
+# --- 指令與其餘邏輯 ---
 
 async def astrology_handler(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot): return
@@ -325,7 +307,7 @@ async def astrology_handler(message: Message, bot: TeleBot) -> None:
     if len(text) < 2: return
     sign = text[1]
     prompt = f"分析{sign}的這個月運勢。" if 'horoscope' in text[0] else f"分析{sign}與{text[2] if len(text)>2 else '另一半'}的配對。"
-    await gemini.gemini_stream(bot, message, prompt)
+    await execute_and_save(message.from_user.id, bot, message, prompt)
 
 async def access(message: Message, bot: TeleBot) -> None:
     if not is_admin(message.from_user.id): return
@@ -345,21 +327,26 @@ async def accessrequest(message: Message, bot: TeleBot) -> None:
     await bot.reply_to(message, f"Access requests are now {'open' if enabled else 'closed'}.")
 
 async def access_callback(call: CallbackQuery, bot: TeleBot) -> None:
+    """處理管理員操作：Revoke, Approve, Reject"""
     parts = call.data.split(":")
     if len(parts) < 4: return
     _, action, subject_type, subject_id = parts
+    
     if action == "revoke":
         await revoke_access(subject_type, int(subject_id), call.from_user.id)
     else:
-        status = "approved" if action == "approve" else "rejected"
-        await review_access(subject_type, int(subject_id), status, call.from_user.id)
+        # 核對決策狀態：'approved' 或 'rejected'
+        decision = "approved" if action == "approve" else "rejected"
+        await review_access(decision, subject_type, int(subject_id), call.from_user.id)
+    
     await bot.answer_callback_query(call.id, text=f"Done")
+    await bot.edit_message_text(f"Action {action} processed for {subject_id}", call.message.chat.id, call.message.message_id)
 
 async def gemini_handler(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot): return
     parts = message.text.strip().split(maxsplit=1)
     if len(parts) < 2: return
-    await gemini.gemini_stream(bot, message, parts[1].strip())
+    await execute_and_save(message.from_user.id, bot, message, parts[1].strip())
 
 async def clear(message: Message, bot: TeleBot) -> None:
     await clear_history(message.from_user.id)
@@ -379,14 +366,14 @@ async def model_callback(call: CallbackQuery, bot: TeleBot) -> None:
 
 async def gemini_private_handler(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot): return
-    await gemini.gemini_stream(bot, message, message.text.strip())
+    await execute_and_save(message.from_user.id, bot, message, message.text.strip())
 
 async def gemini_photo_handler(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot): return
     file = await bot.get_file(message.photo[-1].file_id)
     photo_file = await bot.download_file(file.file_path)
     image = Image.open(io.BytesIO(photo_file))
-    await gemini.gemini_stream(bot, message, [image, message.caption or ""])
+    await execute_and_save(message.from_user.id, bot, message, message.caption or "分析此圖", image=image)
 
 async def send_model_picker(message: Message, bot: TeleBot) -> None:
     models = await list_available_models()
