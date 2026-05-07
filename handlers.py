@@ -115,26 +115,45 @@ async def send_model_picker(message: Message, bot: TeleBot) -> None:
 
 async def start(message: Message, bot: TeleBot) -> None:
     try:
-      #  if not await ensure_authorized(message, bot):
-      #      return
-        await bot.reply_to(message , escape("Welcome, you can ask me questions now. \nFor example: `Who is john lennon?`"), parse_mode="MarkdownV2")
-        await send_model_picker(message, bot)
+        # 建立按鈕
+        markup = InlineKeyboardMarkup(row_width=2)
+        btns = [
+            InlineKeyboardButton("🌌 今日星象", callback_data="astro_daily"),
+            InlineKeyboardButton("🍀 幸運指南", callback_data="astro_lucky"),
+            InlineKeyboardButton("💡 星象建議", callback_data="astro_advice"),
+            InlineKeyboardButton("🧘 舒壓療癒", callback_data="astro_stress"),
+            InlineKeyboardButton("🔥 動力激勵", callback_data="astro_motivation"),
+            InlineKeyboardButton("🌱 心靈練習", callback_data="astro_reflection"),
+            InlineKeyboardButton("🤖 切換模型", callback_data="nav_model"),
+            InlineKeyboardButton("🧹 清除記憶", callback_data="nav_clear")
+        ]
+        markup.add(*btns)
+
+        welcome_text = (
+            "✨ **奕川的解毒劑 - 功能選單** ✨\n\n"
+            "● 直接點選按鈕執行快速功能\n"
+            "● 或輸入指令，例如：\n"
+            "  `/horoscope 雙子座` \n"
+            "  `/compatibility 雙子座 牡羊座`"
+        )
+        await bot.reply_to(message, escape(welcome_text), reply_markup=markup, parse_mode="MarkdownV2")
     except Exception:
         traceback.print_exc()
         await bot.reply_to(message, error_info)
+async def astrology_handler(message: Message, bot: TeleBot) -> None:
+    text = message.text.split()
+    cmd = text[0].replace('/', '')
+    args = text[1:]
+    
+    if cmd == 'horoscope' and args:
+        prompt = f"請詳細分析{args[0]}在這個月的詳細運勢，包含事業、感情與財運。"
+    elif cmd == 'compatibility' and len(args) >= 2:
+        prompt = f"請深入分析{args[0]}與{args[1]}之間的互動、配對優勢與挑戰。"
+    else:
+        await bot.reply_to(message, escape(f"請輸入正確格式，例如：/{cmd} 雙子座"), parse_mode="MarkdownV2")
+        return
 
-async def gemini_handler(message: Message, bot: TeleBot) -> None:
-  #  if not await ensure_authorized(message, bot):
-   #     return
-    try:
-        contents = message.text.strip().split(maxsplit=1)[1].strip()
-    except IndexError:
-        await bot.reply_to(message, escape("Please add what you want to say after /gemini. \nFor example: `/gemini Who is john lennon?`"), parse_mode="MarkdownV2")
-        return
-    if await get_current_model(message.from_user.id) is None:
-        await send_model_picker(message, bot)
-        return
-    await gemini.gemini_stream(bot, message, contents)
+    await gemini.gemini_stream(bot, message, prompt)
 
 async def clear(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot):
@@ -144,7 +163,30 @@ async def clear(message: Message, bot: TeleBot) -> None:
         return
     await clear_history(message.from_user.id)
     await bot.reply_to(message, "Your history has been cleared")
+async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
+    # 預設的占星 Prompt
+    prompts = {
+        "astro_daily": "請以占星師身份，分析今天的整體星象氣氛與今日行動建議。",
+        "astro_lucky": "請告訴我目前的幸運色、幸運數字與幸運方位。",
+        "astro_advice": "請針對工作、財運、健康、感情提供目前的星象建議。",
+        "astro_stress": "我現在感到壓力很大，請提供舒壓與自我療癒的方法。",
+        "astro_motivation": "我現在缺乏動力，請給我專屬的激勵建議。",
+        "astro_reflection": "請給我一個適合本週思考的心靈練習題目。"
+    }
 
+    if call.data in prompts:
+        await bot.answer_callback_query(call.id, text="正在觀測星象...")
+        # 模擬一則訊息發送給 gemini_stream
+        await gemini.gemini_stream(bot, call.message, prompts[call.data])
+    
+    elif call.data == "nav_model":
+        await send_model_picker(call.message, bot)
+        await bot.answer_callback_query(call.id)
+        
+    elif call.data == "nav_clear":
+        await clear_history(call.from_user.id)
+        await bot.answer_callback_query(call.id, text="✅ 記憶已清空")
+        await bot.send_message(call.message.chat.id, "記憶已清除，我們可以聊聊新的話題。")
 async def model(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot):
         return
