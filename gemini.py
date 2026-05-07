@@ -38,14 +38,7 @@ def get_user_error_message(error: Exception) -> str:
 async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) -> None:
     # 1. 發送一個正在思考的提示
     sent_message = await bot.reply_to(message, "🤖 Gemini is thinking...")
-    import datetime
-    # 取得標準時間並手動加上 8 小時 (台灣時區)
-    tz_delta = datetime.timedelta(hours=8)
-    current_time = datetime.datetime.utcnow() + tz_delta
-    current_time_str = current_time.strftime("%Y-%m-%d %H:%M")
     
-    if isinstance(contents, str):
-        contents = f"【系統校時：現在是 {current_time_str}，地點在台灣】\n\n{contents}"
     session = await init_user(message.from_user.id)
     chat = session["chat"]
     lock = session["lock"]
@@ -58,10 +51,20 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
         )
         return
 
+    # --- 系統時間校正 (放在 session 之後避免衝突) ---
+    import datetime
+    tz_delta = datetime.timedelta(hours=8)
+    current_time = datetime.datetime.utcnow() + tz_delta
+    current_time_str = current_time.strftime("%Y-%m-%d %H:%M")
+    
+    if isinstance(contents, str):
+        # 這裡改用較簡潔的標註方式，降低對模型對話判斷的干擾
+        contents = f"[System Time: {current_time_str}]\n{contents}"
+    # ------------------------------------------
+
     async with lock:
         try:
-            # 2. 修改點：捨棄 stream 模式，改用一次性獲取
-            # 這樣連線只會開一次，最符合 Serverless 環境
+            # 2. 呼叫 Gemini 發送訊息
             response = await chat.send_message(contents)
             full_response = response.text
 
@@ -74,7 +77,7 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
                     parse_mode="MarkdownV2"
                 )
             except Exception as e:
-                # 如果 Markdown 解析失敗（常見於代碼區塊），改用純文字
+                # 如果 Markdown 解析失敗，改用純文字
                 await bot.edit_message_text(
                     full_response,
                     chat_id=sent_message.chat.id,
