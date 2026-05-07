@@ -37,10 +37,10 @@ bot = AsyncTeleBot(tg_token)
 
 # --- 2. 註冊 Handler (順序極其重要：由上而下匹配) ---
 
-# 1. 優先處理「按鈕選單」指令 (加上 help)
+# [1] 最優先：功能選單指令 (確保 /help 能觸發按鈕)
 bot.register_message_handler(handlers.start, commands=['start', 'help'], pass_bot=True)
 
-# 2. 處理特定功能指令
+# [2] 功能型指令 (特定指令優先於萬用文字處理)
 bot.register_message_handler(handlers.gemini_handler, commands=['gemini'], pass_bot=True)
 bot.register_message_handler(handlers.clear, commands=['clear'], pass_bot=True)
 bot.register_message_handler(handlers.model, commands=['model'], pass_bot=True)
@@ -48,16 +48,21 @@ bot.register_message_handler(handlers.access, commands=['access'], pass_bot=True
 bot.register_message_handler(handlers.accessrequest, commands=['accessrequest'], pass_bot=True)
 bot.register_message_handler(handlers.astrology_handler, commands=['horoscope', 'compatibility'], pass_bot=True)
 
-# 3. 處理圖片 (不影響文字指令)
+# [3] 媒體類處理
 bot.register_message_handler(handlers.gemini_photo_handler, content_types=["photo"], pass_bot=True)
 
-# 4. 【關鍵修正】處理私訊純文字對話 (必須放在所有 commands 註冊之後)
-# 如果放在 commands 之前，它會搶走所有的訊息處理權
+# [4] 最後防線：處理私訊純文字對話 (當上面的指令都沒匹配到時，才當作一般聊天)
 bot.register_message_handler(handlers.gemini_private_handler, content_types=['text'], pass_bot=True, func=lambda m: m.chat.type == "private")
 
-# 5. 處理 Callback 按鈕事件 (順序：模型切換優先於萬用匹配)
+# --- 註冊 Callback (按鈕點擊事件) ---
+
+# [1] 優先處理特定前綴的按鈕 (模型與權限)
 bot.register_callback_query_handler(handlers.model_callback, func=lambda c: (c.data or "").startswith("model:"), pass_bot=True)
-bot.register_callback_query_handler(handlers.astrology_callback, func=lambda c: True, pass_bot=True)
+bot.register_callback_query_handler(handlers.access_callback, func=lambda c: (c.data or "").startswith("access:"), pass_bot=True)
+
+# [2] 處理占星選單與導航按鈕 (作為保底匹配)
+bot.register_callback_query_handler(handlers.astrology_callback, func=lambda call: True, pass_bot=True)
+
 
 # --- 3. Flask App ---
 app = Flask(__name__)
@@ -67,29 +72,3 @@ async def webhook():
     if request.headers.get('content-type') == 'application/json':
         print(f"[{datetime.now()}] --- Webhook 收到新請求 ---")
         json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        
-        try:
-            # 核心：處理更新
-            await bot.process_new_updates([update])
-            print(f"[{datetime.now()}] Update {update.update_id} 處理完成")
-        except Exception as e:
-            print(f"[{datetime.now()}] 處理錯誤: {e}")
-            traceback.print_exc()
-        finally:
-            # --- 關鍵修正：手動關閉 aiohttp session 避免報錯 ---
-            try:
-                # 取得 bot 內部的 session 
-                session = await bot.get_session()
-                if session and not session.closed:
-                    await session.close()
-            except Exception as e:
-                print(f"Session 清理失敗: {e}")
-                
-        return ''
-    return 'Forbidden', 403
-
-# Vercel 需要這個 app 對象
-if __name__ == "__main__":
-    # 本地測試時使用
-    app.run()
