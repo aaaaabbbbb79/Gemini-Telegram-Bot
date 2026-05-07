@@ -46,6 +46,13 @@ bot.register_message_handler(handlers.gemini_photo_handler, content_types=["phot
 bot.register_message_handler(handlers.gemini_private_handler, content_types=['text'], pass_bot=True, func=lambda m: m.chat.type == "private")
 bot.register_callback_query_handler(handlers.model_callback, func=lambda c: (c.data or "").startswith("model:"), pass_bot=True)
 bot.register_callback_query_handler(handlers.access_callback, func=lambda c: (c.data or "").startswith("access:"), pass_bot=True)
+# --- [新增] 註冊占星專屬指令 ---
+bot.register_message_handler(handlers.astrology_handler, commands=['horoscope', 'compatibility'], pass_bot=True)
+
+# --- [新增] 註冊按鈕點擊事件 (Callback) ---
+# 注意：這裡要放在原本 model_callback 的附近
+bot.register_callback_query_handler(handlers.model_callback, func=lambda call: call.data.startswith(handlers.MODEL_CALLBACK_PREFIX), pass_bot=True)
+bot.register_callback_query_handler(handlers.astrology_callback, func=lambda call: True, pass_bot=True)
 
 # --- 3. Flask App ---
 app = Flask(__name__)
