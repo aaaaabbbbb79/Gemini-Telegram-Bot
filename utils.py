@@ -84,22 +84,20 @@ async def list_available_models(force_refresh: bool = False) -> list[str]:
     return models
 
 async def init_user(user_id: int) -> UserSession:
-    """if user not exist in chat_dict, create one
-    
-    Args:
-        user_id: (int): user's id
-
-    Returns:
-        UserSession: user's chat session state
-    """
-    if user_id not in chat_dict:#if not find user's chat
+    """if user not exist in chat_dict, create one"""
+    if user_id not in chat_dict:
         lock = Lock()
         model = await to_thread(get_user_model, user_id)
-        if model:
-            history = await to_thread(load_history, user_id, conf["max_history_turns"])
-            chat = get_client().aio.chats.create(model=model, history=history)
-        else:
-            chat = None
+        
+        # --- 修改開始：如果找不到模型，設定一個預設值 ---
+        if not model:
+            model = "gemini-1.5-flash"  # 你可以改成你最喜歡的模型名稱
+            await to_thread(set_user_model, user_id, model) # 同步存入資料庫
+        # ------------------------------------------
+
+        history = await to_thread(load_history, user_id, conf["max_history_turns"])
+        chat = get_client().aio.chats.create(model=model, history=history)
+        
         chat_dict[user_id] = {
             "chat": chat,
             "lock": lock,
