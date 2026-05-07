@@ -20,7 +20,8 @@ from access_control import (
     revoke_access,
     set_access_request_enabled,
 )
-from utils import clear_history, get_current_model, list_available_models, select_model
+# 確保導入 save_turn 以實現話題延續
+from utils import clear_history, get_current_model, list_available_models, select_model, save_turn
 
 error_info              =       conf["error_info"]
 before_generate_info    =       conf["before_generate_info"]
@@ -59,7 +60,6 @@ def build_feature_keyboard(sign):
 # --- 核心新增：建立時間選擇鍵盤 ---
 def build_time_picker_keyboard(action, sign):
     markup = InlineKeyboardMarkup(row_width=3)
-    # 將功能與星座資訊帶入下一步
     btns = [
         InlineKeyboardButton("📅 當日", callback_data=f"time_select:day:{action}:{sign}"),
         InlineKeyboardButton("📅 當月", callback_data=f"time_select:month:{action}:{sign}"),
@@ -119,7 +119,7 @@ async def start(message: Message, bot: TeleBot) -> None:
 async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
     try:
         data = call.data
-        # 1. 選擇星座 或 從時間選擇返回
+        # 1. 選擇星座 或 從時間選擇返回功能表
         if data.startswith("select_sign:"):
             sign = data.split(":")[1]
             text = f"✨ **{sign}** 的專屬解毒劑選單 ✨\n\n請選擇項目："
@@ -129,7 +129,7 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
         elif data == "nav_back_to_zodiac":
             await bot.edit_message_text("請選擇你的 **星座**：", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=build_zodiac_keyboard())
         
-        # 3. 核心修改：點擊功能後，先跳轉到「時間選擇」選單
+        # 3. 點擊功能後，跳轉到「時間選擇」選單
         elif data.startswith("astro_"):
             parts = data.split(":")
             if len(parts) < 2: return
@@ -143,7 +143,7 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
             text = f"🔮 **{sign} - {display_name}**\n\n請選擇您想查看的時間維度："
             await bot.edit_message_text(escape(text), chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=build_time_picker_keyboard(action, sign), parse_mode="MarkdownV2")
 
-        # 4. 核心修改：處理最終的時間選擇並生成內容
+        # 4. 處理時間選擇、生成內容並保存話題歷史
         elif data.startswith("time_select:"):
             _, time_frame, action, sign = data.split(":")
             time_map = {"day": "今日/當天", "month": "本月/當月", "year": "今年/年度"}
@@ -159,15 +159,23 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
             }
 
             if action in prompts:
+                user_id = call.from_user.id
+                user_prompt = prompts[action]
                 await bot.answer_callback_query(call.id, text=f"正在觀測 {sign} 的 {time_text} 能量...")
-                await gemini.gemini_stream(bot, call.message, prompts[action])
+                
+                # 執行串流生成
+                response_text = await gemini.gemini_stream(bot, call.message, user_prompt)
+                
+                # 【話題延續關鍵】將按鈕指令與回覆存入歷史紀錄
+                if response_text:
+                    await save_turn(user_id, user_prompt, response_text)
 
         elif data == "nav_model":
             await send_model_picker(call.message, bot)
     except Exception:
         traceback.print_exc()
 
-# --- 其餘代碼保持不變 ---
+# --- 其餘代碼 (gemini_handler, model_callback 等) 保持不變 ---
 async def gemini_handler(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot): return
     parts = message.text.strip().split(maxsplit=1)
