@@ -35,7 +35,8 @@ def build_zodiac_keyboard(prefix="select_sign", extra_data=""):
     btns = []
     for z in zodiacs:
         cb_data = f"{prefix}:{z}"
-        if extra_data: cb_data += f format_access_request":{extra_data}"
+        if extra_data: 
+            cb_data += f":{extra_data}"
         btns.append(InlineKeyboardButton(z, callback_data=cb_data))
     markup.add(*btns)
     return markup
@@ -45,12 +46,13 @@ def build_gender_keyboard(sign, prefix="set_gender", extra_data=""):
     markup = InlineKeyboardMarkup(row_width=2)
     for g in ["男", "女"]:
         cb_data = f"{prefix}:{sign}:{g}"
-        if extra_data: cb_data += f":{extra_data}"
+        if extra_data: 
+            cb_data += f":{extra_data}"
         markup.add(InlineKeyboardButton(g, callback_data=cb_data))
     return markup
 
 def build_feature_keyboard(sign, gender):
-    """主功能選單：包含占星、配對與天氣"""
+    """主功能選單"""
     markup = InlineKeyboardMarkup(row_width=2)
     btns = [
         InlineKeyboardButton("🌌 今日星象", callback_data=f"astro_daily:{sign}:{gender}"),
@@ -68,7 +70,7 @@ def build_feature_keyboard(sign, gender):
     return markup
 
 def build_time_picker_keyboard(action, sign, gender, p_sign="", p_gender=""):
-    """占星專用時間選擇器 (含此生)"""
+    """占星專用時間選擇器"""
     markup = InlineKeyboardMarkup(row_width=2)
     suffix = f"{action}:{sign}:{gender}:{p_sign}:{p_gender}"
     btns = [
@@ -87,7 +89,7 @@ def build_time_picker_keyboard(action, sign, gender, p_sign="", p_gender=""):
 # --- 2. 鍵盤生成器：天氣專用 ---
 
 def build_weather_country_keyboard(sign, gender):
-    """天氣第一層：選擇國家/區域"""
+    """天氣第一層：選擇區域"""
     markup = InlineKeyboardMarkup(row_width=2)
     regions = [("🇹🇼 台灣", "Taiwan"), ("🇨🇳 中國", "China"), ("🇯🇵 日本", "Japan")]
     for name, code in regions:
@@ -119,7 +121,7 @@ def build_weather_type_keyboard(city_code, sign, gender):
         InlineKeyboardButton("⏰ 每小時詳細預報", callback_data=f"weather_final:hourly:{city_code}:{sign}:{gender}"),
         InlineKeyboardButton("📅 本週天氣趨勢", callback_data=f"weather_final:weekly:{city_code}:{sign}:{gender}")
     )
-    markup.add(InlineKeyboardButton("🔙 返回選城市", callback_data=f"weather_city:back:{sign}:{gender}"))
+    markup.add(InlineKeyboardButton("🔙 返回選城市", callback_data=f"weather_country:{sign}:{gender}"))
     return markup
 
 # --- 3. 核心邏輯處理 ---
@@ -130,7 +132,6 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
         chat_id = call.message.chat.id
         msg_id = call.message.message_id
 
-        # --- A. 基礎星座設定流 ---
         if data.startswith("select_sign:"):
             sign = data.split(":")[1]
             await bot.edit_message_text(f"好的，你是 **{sign}**。那請教你的性別是？", chat_id=chat_id, message_id=msg_id, reply_markup=build_gender_keyboard(sign, "set_gender"), parse_mode="MarkdownV2")
@@ -140,15 +141,13 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
             text = f"✨ **{sign} ({gender})** 的專屬解毒劑選單 ✨\n\n請選擇您感興趣的項目："
             await bot.edit_message_text(escape(text), chat_id=chat_id, message_id=msg_id, reply_markup=build_feature_keyboard(sign, gender), parse_mode="MarkdownV2")
 
-        # --- B. 天氣功能流 ---
         elif data.startswith("weather_country:"):
             _, sign, gender = data.split(":")
             await bot.edit_message_text("☀️ **天氣預報查詢**\n\n請選擇您想查詢的區域：", chat_id=chat_id, message_id=msg_id, reply_markup=build_weather_country_keyboard(sign, gender), parse_mode="MarkdownV2")
 
         elif data.startswith("weather_city:"):
-            parts = data.split(":")
-            _, country, sign, gender = parts
-            await bot.edit_message_text(f"📍 **正在定位：{country if country != 'back' else '區域'}**\n\n請選擇城市：", chat_id=chat_id, message_id=msg_id, reply_markup=build_weather_city_keyboard(country, sign, gender), parse_mode="MarkdownV2")
+            _, country, sign, gender = data.split(":")
+            await bot.edit_message_text(f"📍 **正在定位區域**\n\n請選擇城市：", chat_id=chat_id, message_id=msg_id, reply_markup=build_weather_city_keyboard(country, sign, gender), parse_mode="MarkdownV2")
 
         elif data.startswith("weather_type:"):
             _, city, sign, gender = data.split(":")
@@ -156,19 +155,17 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
 
         elif data.startswith("weather_final:"):
             _, t_type, city, sign, gender = data.split(":")
-            t_name = {"today": "本日整體", "hourly": "逐小時", "weekly": "本週"}.get(t_type, "天氣")
+            t_name = {"today": "本日整體", "hourly": "逐小時", "weekly": "本週"}.get(t_type, "天氣預報")
             await bot.answer_callback_query(call.id, text=f"正在調取 {city} 的 {t_name} 數據...")
             
-            # 讓 Gemini 結合星座特質與天氣給出建議
             weather_prompts = {
-                "today": f"請查詢並分析「{city}」的今日整體天氣概況。以溫暖的語氣，為「{gender}性{sign}」提供今天的穿搭、出門建議與心情點評。",
-                "hourly": f"請詳細列出「{city}」今天各個時段（每小時）的天氣變化。針對「{gender}性{sign}」的活動規律，給予精確的時間點提醒（例如降雨機率、溫差變化）。",
-                "weekly": f"請分析「{city}」未來一週的天氣走向。為「{gender}性{sign}」規劃這週的行事曆建議，包含哪些天適合外出，哪些天適合待在室內。"
+                "today": f"請查詢並分析「{city}」的今日整體天氣概況。以暖心占星師口吻，為「{gender}性{sign}」提供穿搭與出門建議。",
+                "hourly": f"請詳細列出「{city}」今天每小時的天氣變化。針對「{gender}性{sign}」給予精確降雨與溫差提醒。",
+                "weekly": f"請分析「{city}」未來一週天氣走向。為「{gender}性{sign}」提供生活規劃建議。"
             }
             user_prompt = weather_prompts.get(t_type, f"查詢{city}天氣")
             await gemini.gemini_stream(bot, call.message, user_prompt)
 
-        # --- C. 星座與配對功能流 ---
         elif data.startswith("astro_"):
             parts = data.split(":")
             action, sign, gender = parts[0], parts[1], parts[2]
@@ -179,7 +176,7 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
 
         elif data.startswith("match_start:"):
             _, my_sign, my_gender = data.split(":")
-            text = f"❤️ **星座配對**\n\n您：{my_sign}({my_gender})\n\n請選擇 **對方的星座**："
+            text = f"❤️ **星座配對**\n\n您的設定：{my_sign}({my_gender})\n\n請選擇 **對方的星座**："
             await bot.edit_message_text(escape(text), chat_id=chat_id, message_id=msg_id, reply_markup=build_zodiac_keyboard("match_p_sign", f"{my_sign}:{my_gender}"), parse_mode="MarkdownV2")
 
         elif data.startswith("match_p_sign:"):
@@ -189,7 +186,7 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
 
         elif data.startswith("match_p_gender:"):
             _, p_sign, p_gender, my_sign, my_gender = data.split(":")
-            text = f"❤️ **星座配對**\n\n您：{my_sign}({my_gender})\n對象：{p_sign}({p_gender})\n\n選擇想查看的配對時效："
+            text = f"❤️ **星座配對**\n\n您：{my_sign}({my_gender})\n對象：{p_sign}({p_gender})\n\n選擇配對時效："
             await bot.edit_message_text(escape(text), chat_id=chat_id, message_id=msg_id, reply_markup=build_time_picker_keyboard("match_final", my_sign, my_gender, p_sign, p_gender), parse_mode="MarkdownV2")
 
         elif data.startswith("time_select:"):
@@ -200,16 +197,16 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
 
             if action == "match_final":
                 if time_frame == "life":
-                    user_prompt = f"分析「{my_gender}性{my_sign}」與「{p_gender}性{p_sign}」這輩子的「宿命緣分」。包含長期相處課題、靈魂契合度與共同生活建議。"
+                    user_prompt = f"分析「{my_gender}性{my_sign}」與「{p_gender}性{p_sign}」這輩子的「宿命緣分」。包含長期相處課題與建議。"
                 else:
-                    user_prompt = f"分析「{my_gender}性{my_sign}」與「{p_gender}性{p_sign}」在「{t_text}」的星座配對運勢與溝通建議。"
+                    user_prompt = f"分析「{my_gender}性{my_sign}」與「{p_gender}性{p_sign}」在「{t_text}」的星座配對運勢。"
             else:
                 if time_frame == "life":
                     prompts = {
                         "astro_daily": f"解析「{my_gender}性{my_sign}」這輩子的「生命核心目標」與命運基調。",
-                        "astro_lucky": f"解析「{my_gender}性{my_sign}」此生的「貴人格局」與長期的幸運特質。",
-                        "astro_advice": f"針對「{my_gender}性{my_sign}」這輩子在「事業、財富與感情」的人生大方向建議。",
-                        "astro_stress": f"身為「{my_gender}性{my_sign}」這輩子最容易遇到的「心靈坎坷」與化解之道。",
+                        "astro_lucky": f"解析「{my_gender}性{my_sign}」此生的「貴人格局」與長期幸運特質。",
+                        "astro_advice": f"針對「{my_gender}性{my_sign}」這輩子在「事業、財富與感情」的大方向建議。",
+                        "astro_stress": f"解析「{my_gender}性{my_sign}」這輩子最容易遇到的「心靈坎坷」與化解之道。",
                         "astro_motivation": f"什麼樣的人生願景能激發「{my_gender}性{my_sign}」一輩子的行動力？",
                         "astro_reflection": f"給「{my_gender}性{my_sign}」一個這輩子值得探索的「生命命題」。"
                     }
@@ -234,7 +231,7 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
     except Exception:
         traceback.print_exc()
 
-# --- 4. 其餘指令 (Start, Clear, etc.) ---
+# --- 4. 其餘不變之 Handler ---
 
 async def start(message: Message, bot: TeleBot) -> None:
     welcome_text = "✨ **奕川的解毒劑 - 命運導航系統** ✨\n\n請先點選您的 **星座** 開始探索："
@@ -246,5 +243,3 @@ async def send_model_picker(message: Message, bot: TeleBot) -> None:
     for i, m in enumerate(models):
         markup.add(InlineKeyboardButton(m, callback_data=f"{MODEL_CALLBACK_PREFIX}{i}"))
     await bot.send_message(message.chat.id, "請選擇欲使用的 AI 模型：", reply_markup=markup)
-
-# ... (省略 access, clear 等其餘不變的 Handler) ...
