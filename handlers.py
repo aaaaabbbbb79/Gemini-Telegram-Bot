@@ -114,7 +114,15 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
             await bot.edit_message_text("請選擇你的 **星座**：", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=build_zodiac_keyboard())
         elif data.startswith("astro_"):
             parts = data.split(":")
-            action, sign = parts[0], parts[1] if len(parts) > 1 else "未知"
+            action = parts[0]
+            
+            # 核心修正：檢查是否包含星座參數。若無(舊版按鈕)，則導回星座選擇
+            if len(parts) < 2:
+                await bot.answer_callback_query(call.id, text="⚠️ 選單已過期，請重新選擇星座", show_alert=True)
+                await bot.edit_message_text("✨ **請重新選擇星座** ✨", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=build_zodiac_keyboard())
+                return
+
+            sign = parts[1]
             prompts = {
                 "astro_daily": f"分析「{sign}」今天的整體星象與建議。",
                 "astro_lucky": f"告訴「{sign}」目前的幸運色、數字與方位。",
@@ -141,7 +149,6 @@ async def astrology_handler(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot): return
     text = message.text.split()
     if len(text) < 2: return
-    # 修正：確保索引不會超出範圍
     sign = text[1]
     prompt = f"分析{sign}的這個月運勢。" if 'horoscope' in text[0] else f"分析{sign}與{text[2] if len(text)>2 else '另一半'}的配對。"
     await gemini.gemini_stream(bot, message, prompt)
@@ -164,7 +171,9 @@ async def accessrequest(message: Message, bot: TeleBot) -> None:
     await bot.reply_to(message, f"Access requests are now {'open' if enabled else 'closed'}.")
 
 async def access_callback(call: CallbackQuery, bot: TeleBot) -> None:
-    _, action, subject_type, subject_id = call.data.split(":")
+    parts = call.data.split(":")
+    if len(parts) < 4: return
+    _, action, subject_type, subject_id = parts
     if action == "revoke":
         await revoke_access(subject_type, int(subject_id), call.from_user.id)
     else:
