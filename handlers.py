@@ -54,12 +54,12 @@ def build_gender_keyboard(sign, prefix="set_gender", extra_data=""):
     return markup
 
 def build_feature_keyboard(sign, gender):
-    """主功能選單：新增天氣預報入口"""
+    """主功能選單"""
     markup = InlineKeyboardMarkup(row_width=2)
     btns = [
         InlineKeyboardButton("🌌 今日星象", callback_data=f"astro_daily:{sign}:{gender}"),
         InlineKeyboardButton("❤️ 星座配對", callback_data=f"match_start:{sign}:{gender}"),
-        InlineKeyboardButton("☀️ 天氣預報", callback_data=f"weather_country:{sign}:{gender}"), # 新增
+        InlineKeyboardButton("☀️ 天氣預報", callback_data=f"weather_country:{sign}:{gender}"),
         InlineKeyboardButton("🍀 幸運指南", callback_data=f"astro_lucky:{sign}:{gender}"),
         InlineKeyboardButton("💡 星象建議", callback_data=f"astro_advice:{sign}:{gender}"),
         InlineKeyboardButton("🧘 舒壓療癒", callback_data=f"astro_stress:{sign}:{gender}"),
@@ -88,29 +88,61 @@ def build_time_picker_keyboard(action, sign, gender, p_sign="", p_gender=""):
         markup.add(InlineKeyboardButton("🔙 返回功能清單", callback_data=f"set_gender:{sign}:{gender}"))
     return markup
 
-# --- 天氣專用鍵盤生成器 ---
+# --- 天氣專用鍵盤生成器 (優化版) ---
 
 def build_weather_country_keyboard(sign, gender):
-    """天氣第一層：選擇國家/區域"""
+    """天氣第一層：選擇國家/區域 (新增東南亞佈局)"""
     markup = InlineKeyboardMarkup(row_width=2)
-    regions = [("🇹🇼 台灣", "Taiwan"), ("🇨🇳 中國", "China"), ("🇯🇵 日本", "Japan")]
-    for name, code in regions:
+    countries = [
+        ("🇹🇼 台灣", "Taiwan"), ("🇨🇳 中國", "China"), ("🇯🇵 日本", "Japan"),
+        ("🇸🇬 新加坡", "Singapore"), ("🇲🇾 馬來西亞", "Malaysia"), ("🇹🇭 泰國", "Thailand"),
+        ("🇻🇳 越南", "Vietnam"), ("🇵🇭 菲律賓", "Philippines")
+    ]
+    for name, code in countries:
         markup.add(InlineKeyboardButton(name, callback_data=f"weather_city:{code}:{sign}:{gender}"))
     markup.add(InlineKeyboardButton("🔙 返回功能清單", callback_data=f"set_gender:{sign}:{gender}"))
     return markup
 
 def build_weather_city_keyboard(country_code, sign, gender):
-    """天氣第二層：選擇城市"""
+    """天氣第二層：顯示完整城市清單"""
     markup = InlineKeyboardMarkup(row_width=3)
-    if country_code == "Taiwan":
-        cities = [("台北", "Taipei"), ("台中", "Taichung"), ("高雄", "Kaohsiung"), ("桃園", "Taoyuan"), ("台南", "Tainan")]
-    elif country_code == "China":
-        cities = [("菏澤", "Heze"), ("濟南", "Jinan"), ("青島", "Qingdao"), ("北京", "Beijing"), ("上海", "Shanghai")]
-    else:
-        cities = [("東京", "Tokyo"), ("大阪", "Osaka"), ("京都", "Kyoto")]
     
+    city_db = {
+        "Taiwan": [
+            ("基隆", "Keelung"), ("台北", "Taipei"), ("新北", "NewTaipei"), ("桃園", "Taoyuan"),
+            ("新竹市", "HsinchuCity"), ("新竹縣", "HsinchuCounty"), ("苗栗", "Miaoli"), ("台中", "Taichung"),
+            ("彰化", "Changhua"), ("南投", "Nantou"), ("雲林", "Yunlin"), ("嘉義市", "ChiayiCity"),
+            ("嘉義縣", "ChiayiCounty"), ("台南", "Tainan"), ("高雄", "Kaohsiung"), ("屏東", "Pingtung"),
+            ("宜蘭", "Yilan"), ("花蓮", "Hualien"), ("台東", "Taitung"), ("澎湖", "Penghu"),
+            ("金門", "Kinmen"), ("連江", "Lienchiang")
+        ],
+        "China": [
+            ("菏澤", "Heze"), ("濟南", "Jinan"), ("青島", "Qingdao"), ("北京", "Beijing"),
+            ("上海", "Shanghai"), ("廣州", "Guangzhou"), ("深圳", "Shenzhen"), ("杭州", "Hangzhou")
+        ],
+        "Japan": [
+            ("東京", "Tokyo"), ("大阪", "Osaka"), ("京都", "Kyoto"), ("福岡", "Fukuoka"),
+            ("沖繩", "Okinawa"), ("札幌", "Sapporo")
+        ],
+        "Singapore": [("新加坡", "Singapore")],
+        "Malaysia": [
+            ("吉隆坡", "KualaLumpur"), ("檳城", "Penang"), ("新山", "JohorBahru"), ("馬六甲", "Malacca")
+        ],
+        "Thailand": [
+            ("曼谷", "Bangkok"), ("清邁", "ChiangMai"), ("普吉島", "Phuket"), ("蘇梅島", "KohSamui")
+        ],
+        "Vietnam": [
+            ("胡志明市", "HCMC"), ("河內", "Hanoi"), ("峴港", "DaNang"), ("芽莊", "NhaTrang")
+        ],
+        "Philippines": [
+            ("馬尼拉", "Manila"), ("宿霧", "Cebu"), ("長灘島", "Boracay"), ("巴拉望", "Palawan")
+        ]
+    }
+
+    cities = city_db.get(country_code, [("未知城市", "Unknown")])
     for name, code in cities:
         markup.add(InlineKeyboardButton(name, callback_data=f"weather_type:{code}:{sign}:{gender}"))
+    
     markup.add(InlineKeyboardButton("🔙 返回選國家", callback_data=f"weather_country:{sign}:{gender}"))
     return markup
 
@@ -122,10 +154,10 @@ def build_weather_type_keyboard(city_code, sign, gender):
         InlineKeyboardButton("⏰ 每小時詳細預報", callback_data=f"weather_final:hourly:{city_code}:{sign}:{gender}"),
         InlineKeyboardButton("📅 本週天氣趨勢", callback_data=f"weather_final:weekly:{city_code}:{sign}:{gender}")
     )
-    markup.add(InlineKeyboardButton("🔙 返回選城市", callback_data=f"weather_country:{sign}:{gender}"))
+    markup.add(InlineKeyboardButton("🔙 返回選國家", callback_data=f"weather_country:{sign}:{gender}"))
     return markup
 
-# --- 權限與管理邏輯 (保持原樣) ---
+# --- 權限與管理邏輯 ---
 
 def build_access_markup(subject_type: str, subject_id: int) -> InlineKeyboardMarkup:
     markup = InlineKeyboardMarkup(row_width=2)
@@ -178,7 +210,6 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
         chat_id = call.message.chat.id
         msg_id = call.message.message_id
 
-        # 基礎路徑
         if data.startswith("select_sign:"):
             sign = data.split(":")[1]
             await bot.edit_message_text(f"好的，你是 **{sign}**。那請教你的性別是？", chat_id=chat_id, message_id=msg_id, reply_markup=build_gender_keyboard(sign, "set_gender"), parse_mode="MarkdownV2")
@@ -215,7 +246,7 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
             response = await gemini.gemini_stream(bot, call.message, user_prompt)
             if response: await save_turn(call.from_user.id, user_prompt, response)
 
-        # --- 星座功能流 (原本的成功邏輯) ---
+        # --- 星座功能流 ---
         elif data.startswith("astro_"):
             parts = data.split(":")
             action, sign, gender = parts[0], parts[1], parts[2]
@@ -286,7 +317,7 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
     except Exception:
         traceback.print_exc()
 
-# --- 其餘指令與邏輯 (保持原樣) ---
+# --- 其餘指令與邏輯 ---
 
 async def astrology_handler(message: Message, bot: TeleBot) -> None:
     if not await ensure_authorized(message, bot): return
