@@ -36,7 +36,7 @@ async def execute_and_save(user_id, bot, message, prompt, image=None):
     確保所有生成的內容都會被記錄到資料庫，解決 30 分鐘後記憶遺失的問題。
     """
     # 1. 預存 User 的 Prompt (確保歷史紀錄連貫)
-    save_prompt = prompt if not image else f"[圖片對話] {prompt}"
+    save_prompt = prompt if not image else f"[多媒體對話] {prompt}"
     await save_turn(user_id, save_prompt, "")
     
     # 短暫延遲確保資料庫寫入順序
@@ -96,7 +96,7 @@ def build_time_picker_keyboard(action, sign, gender, p_sign="", p_gender=""):
         InlineKeyboardButton("📅 當日", callback_data=f"time_select:day:{suffix}"),
         InlineKeyboardButton("📅 當月", callback_data=f"time_select:month:{suffix}"),
         InlineKeyboardButton("📅 當年", callback_data=f"time_select:year:{suffix}"),
-        InlineKeyboardButton("♾️ 此生", callback_data=f"time_select:life:{suffix}")
+        InlineKeyboardButton("📅 此生", callback_data=f"time_select:life:{suffix}")
     ]
     markup.add(*btns)
     if p_sign:
@@ -374,6 +374,37 @@ async def gemini_photo_handler(message: Message, bot: TeleBot) -> None:
     photo_file = await bot.download_file(file.file_path)
     image = Image.open(io.BytesIO(photo_file))
     await execute_and_save(message.from_user.id, bot, message, message.caption or "分析此圖", image=image)
+
+# --- 新增的影片處理邏輯 ---
+
+async def gemini_video_handler(message: Message, bot: TeleBot) -> None:
+    """處理一般影片與影音訊息 (video_note)"""
+    if not await ensure_authorized(message, bot): return
+    
+    # 提醒使用者正在處理 (影片分析較慢)
+    sent_msg = await bot.reply_to(message, "🎬 正在接收並分析影片，請稍候...")
+    
+    try:
+        # 取得影片物件 (支援 video 或 video_note)
+        video_obj = message.video or message.video_note
+        file_info = await bot.get_file(video_obj.file_id)
+        video_file = await bot.download_file(file_info.file_path)
+        
+        # 標註影片類型與數據
+        video_part = {"mime_type": "video/mp4", "data": video_file}
+        
+        # 取得文字描述，若無則提供預設
+        caption = message.caption or "請分析這段影片的內容。"
+        
+        # 執行生成並存檔
+        await execute_and_save(message.from_user.id, bot, message, caption, image=video_part)
+        
+        # 任務完成，刪除提示訊息
+        await bot.delete_message(message.chat.id, sent_msg.message_id)
+        
+    except Exception:
+        traceback.print_exc()
+        await bot.edit_message_text("❌ 影片分析失敗，請確認影片大小或格式是否正確。", message.chat.id, sent_msg.message_id)
 
 async def send_model_picker(message: Message, bot: TeleBot) -> None:
     models = await list_available_models()
