@@ -45,7 +45,7 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
     # 2. 獲取使用者 session
     session_data = await init_user(message.from_user.id)
     chat = session_data.get("chat")
-    model_name = session_data.get("model") # 這裡獲取的是模型名稱字串
+    model_name = session_data.get("model") # 獲取模型名稱字串
     lock = session_data.get("lock")
     
     if chat is None or model_name is None:
@@ -72,12 +72,14 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
     # 使用 lock 確保同個使用者不會同時觸發多個生成任務
     async with lock:
         try:
+            # 確保模型名稱帶有正確路徑，修復 404 NOT_FOUND 報錯
+            target_model = model_name if model_name.startswith("models/") else f"models/{model_name}"
+
             # 3. 執行內容生成
             if isinstance(contents, list):
-                # 【關鍵修正】修正 AttributeError: 'str' object has no attribute 'generate_content'
-                # 透過 get_client().aio.models.generate_content 並傳入模型名稱來處理列表
+                # 處理影片或多媒體列表，修復 AttributeError
                 response = await get_client().aio.models.generate_content(
-                    model=model_name,
+                    model=target_model,
                     contents=contents
                 )
             else:
