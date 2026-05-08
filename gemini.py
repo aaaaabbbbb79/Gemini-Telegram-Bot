@@ -8,8 +8,9 @@ from telebot.types import Message
 from md2tgmd import escape
 from telebot import TeleBot
 
+# 引入 get_client 以便調用非同步模型功能
 from config import conf
-from utils import init_user, save_turn
+from utils import init_user, save_turn, get_client
 
 error_info              =       conf["error_info"]
 before_generate_info    =       conf["before_generate_info"]
@@ -44,10 +45,10 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
     # 2. 獲取使用者 session
     session_data = await init_user(message.from_user.id)
     chat = session_data.get("chat")
-    model = session_data.get("model")
+    model_name = session_data.get("model") # 這裡獲取的是模型名稱字串
     lock = session_data.get("lock")
     
-    if chat is None or model is None:
+    if chat is None or model_name is None:
         await bot.edit_message_text(
             "Please choose a model first with /model.",
             chat_id=sent_message.chat.id,
@@ -73,8 +74,12 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
         try:
             # 3. 執行內容生成
             if isinstance(contents, list):
-                # 影片或多媒體內容使用 generate_content 避開 chat 模式對列表的限制
-                response = await model.generate_content(contents)
+                # 【關鍵修正】修正 AttributeError: 'str' object has no attribute 'generate_content'
+                # 透過 get_client().aio.models.generate_content 並傳入模型名稱來處理列表
+                response = await get_client().aio.models.generate_content(
+                    model=model_name,
+                    contents=contents
+                )
             else:
                 # 純文字維持使用 chat 模式以保留對話上下文
                 response = await chat.send_message(contents)
