@@ -32,11 +32,16 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
     chat = session_data.get("chat")
     model_name = session_data.get("model")
     lock = session_data.get("lock")
-    print(f"DEBUG: Current model is {target_model}")
     
     if chat is None or model_name is None:
         await bot.edit_message_text("Please choose a model first.", chat_id=sent_message.chat.id, message_id=sent_message.message_id)
         return None
+
+    # --- 修正後的模型名稱定義 ---
+    target_model = model_name if model_name.startswith("models/") else f"models/{model_name}"
+    
+    # 加入 DEBUG 日誌，讓你在後台確認模型
+    print(f"DEBUG: [User {message.from_user.id}] 目前調用的模型是: {target_model}")
 
     # --- 系統時間與 Prompt 紀錄 ---
     tz_delta = datetime.timedelta(hours=8)
@@ -60,8 +65,7 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
                 # 處理純文字：加上系統時間
                 formatted_contents = [f"[System Time: {current_time_str}]\n{contents}"]
 
-            # 4. 【關鍵修正】統一使用 chat.send_message 以延續對話上下文
-            # 這樣 Gemini 才會記得之前關於「拔不掉起子頭」的討論
+            # 4. 統一使用 chat.send_message 以延續對話上下文
             response = await chat.send_message(formatted_contents)
             
             # 5. 取得生成文字
@@ -76,7 +80,6 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
                     parse_mode="MarkdownV2"
                 )
             except Exception:
-                # Markdown 渲染失敗時降級為純文字
                 await bot.edit_message_text(
                     full_response, 
                     chat_id=sent_message.chat.id, 
