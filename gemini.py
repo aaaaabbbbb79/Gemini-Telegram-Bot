@@ -68,8 +68,8 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
 
     async with lock:
         try:
-            # 2. 呼叫 Gemini 發送訊息
-            response = await chat.send_message(contents)
+            # 強制將 contents 解包
+            response = await chat.send_message(contents if isinstance(contents, str) else contents)
             full_response = response.text
 
             # 3. 更新訊息顯示
