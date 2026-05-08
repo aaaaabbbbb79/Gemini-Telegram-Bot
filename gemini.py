@@ -32,6 +32,7 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
     chat = session_data.get("chat")
     model_name = session_data.get("model")
     lock = session_data.get("lock")
+    print(f"DEBUG: Current model is {target_model}")
     
     if chat is None or model_name is None:
         await bot.edit_message_text("Please choose a model first.", chat_id=sent_message.chat.id, message_id=sent_message.message_id)
