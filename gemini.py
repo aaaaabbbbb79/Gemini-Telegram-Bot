@@ -37,15 +37,15 @@ def get_user_error_message(error: Exception) -> str:
     return error_info
 
 async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) -> str | None:
-    # 1. 發送一個正在思考的提示
+    # 1. 發送正在思考的提示
     sent_message = await bot.reply_to(message, "🤖 Gemini is thinking...")
     
     session = await init_user(message.from_user.id)
-    chat = session["chat"]
-    model = session["model"] # 確保從 session 取得 model 物件
-    lock = session["lock"]
+    chat = session.get("chat")
+    model = session.get("model")  # 從 session 取得 model 實例
+    lock = session.get("lock")
     
-    if chat is None:
+    if chat is None or model is None:
         await bot.edit_message_text(
             "Please choose a model first with /model.",
             chat_id=sent_message.chat.id,
@@ -68,18 +68,18 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
 
     async with lock:
         try:
-            # 1. 執行內容生成
+            # 1. 執行內容生成 (根據型態選擇方法)
             if isinstance(contents, list):
-                # 針對包含影片/圖片的清單，使用 generate_content 避開列表報錯
+                # 針對包含影片/圖片的清單，使用 generate_content 避開 chat 模式的格式限制
                 response = await model.generate_content(contents)
             else:
-                # 純文字則使用 chat 模式保留對話記憶
+                # 純文字則使用 chat 模式保留對話上下文
                 response = await chat.send_message(contents)
             
-            # 2. 賦值結果
+            # 2. 取得生成的文字內容
             full_response = response.text
 
-            # 3. 更新訊息顯示
+            # 3. 更新訊息顯示 (處理 MarkdownV2 渲染)
             try:
                 await bot.edit_message_text(
                     escape(full_response),
@@ -88,21 +88,21 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
                     parse_mode="MarkdownV2"
                 )
             except Exception:
-                # Markdown 失敗則用純文字
+                # 若渲染失敗則退回純文字模式
                 await bot.edit_message_text(
                     full_response,
                     chat_id=sent_message.chat.id,
                     message_id=sent_message.message_id
                 )
-            
-            # 4. 儲存紀錄並返回
+
+            # 4. 成功後儲存對話紀錄並回傳
             await save_turn(message.from_user.id, original_prompt, full_response)
             return full_response
 
         except Exception as e:
+            # 錯誤路徑：列印異常、顯示錯誤提示並返回 None
             traceback.print_exc()
             error_msg = get_user_error_message(e)
-            full_response = error_msg
             try:
                 await bot.edit_message_text(
                     error_msg,
