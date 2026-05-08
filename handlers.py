@@ -32,28 +32,29 @@ ACCESS_CALLBACK_PREFIX  =       "access:"
 # --- 核心邏輯：執行並同步存檔以維持 30 分鐘後的記憶 ---
 
 async def execute_and_save(user_id, bot, message, prompt, image=None):
-    # 1. 預存 Prompt
+    # 1. 預存紀錄
     save_prompt = prompt if not image else f"[多媒體對話] {prompt}"
     await save_turn(user_id, save_prompt, "")
-    
     await asyncio.sleep(0.1)
 
-    # 2. 呼叫 Gemini 生成
-    content = [image, prompt] if image else prompt
-    
-    # --- 注意！這裡的 try 必須縮排在函數內部 ---
+    # 2. 關鍵修正：將內容明確化
+    # 如果有圖片/影片，確保它是一個清單；如果是純文字，就直接給字串
+    if image:
+        # 這裡的 image 應該已經是 SDK 的 File 或 Part 物件
+        content = [image, prompt] 
+    else:
+        content = prompt
+
     try:
-        # 第 49 行：必須比 try 再多縮排 4 個空格！
+        # 呼叫時直接傳遞 content
         response = await gemini.gemini_stream(bot, message, content)
     except Exception as e:
-        # except 必須跟 try 垂直對齊
         print(f"Gemini 處理出錯: {e}")
-        response = "抱歉，分析時發生超時或錯誤，請嘗試傳送較短的內容。"
+        response = "抱歉，分析時發生錯誤，請嘗試縮短內容或稍後再試。"
 
-    # 3. 存入 AI 的回答 (這兩行也要對齊函數內部)
+    # 3. 存入回答
     if response:
         await save_turn(user_id, save_prompt, response)
-        
     return response
 
 # --- 輔助函數：鍵盤生成器 ---
