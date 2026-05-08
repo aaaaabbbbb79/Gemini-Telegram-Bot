@@ -45,9 +45,9 @@ async def execute_and_save(user_id, bot, message, prompt, image=None):
     # 2. 呼叫 Gemini 生成
     content = [image, prompt] if image else prompt
     # 在第 47 行附近修改：
-try:
+    try:
     response = await gemini.gemini_stream(bot, message, content)
-except Exception as e:
+    except Exception as e:
     print(f"Gemini 處理出錯: {e}")
     response = "抱歉，分析影片時發生超時或錯誤，請嘗試傳送較短的影片或照片。"
     # 3. 存入 AI 的回答
