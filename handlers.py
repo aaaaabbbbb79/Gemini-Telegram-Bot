@@ -37,22 +37,19 @@ async def execute_and_save(user_id, bot, message, prompt, image=None):
     await save_turn(user_id, save_prompt, "")
     await asyncio.sleep(0.1)
 
-    # 2. 關鍵修正：將內容明確化
-    # 如果有圖片/影片，確保它是一個清單；如果是純文字，就直接給字串
-    if image:
-        # 這裡的 image 應該已經是 SDK 的 File 或 Part 物件
-        content = [image, prompt] 
-    else:
-        content = prompt
+    # 2. 內容判斷 (核心修正)
+    # 這裡我們不要預先打包 [image, prompt]，而是直接傳遞
+    contents = [image, prompt] if image else prompt
 
     try:
-        # 呼叫時直接傳遞 content
-        response = await gemini.gemini_stream(bot, message, content)
+        # 3. 呼叫 gemini_stream
+        # 注意：如果傳入的是 list，確保 gemini_stream 內部沒有再包一層 []
+        response = await gemini.gemini_stream(bot, message, contents)
     except Exception as e:
         print(f"Gemini 處理出錯: {e}")
-        response = "抱歉，分析時發生錯誤，請嘗試縮短內容或稍後再試。"
+        response = "抱歉，分析時發生錯誤。請確認影片大小或稍後再試。"
 
-    # 3. 存入回答
+    # 4. 存入回答
     if response:
         await save_turn(user_id, save_prompt, response)
     return response
