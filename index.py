@@ -27,6 +27,8 @@ bot.register_message_handler(handlers.clear, commands=['clear'], pass_bot=True)
 bot.register_message_handler(handlers.model, commands=['model'], pass_bot=True)
 bot.register_message_handler(handlers.astrology_handler, commands=['horoscope', 'compatibility'], pass_bot=True)
 bot.register_message_handler(handlers.gemini_photo_handler, content_types=["photo"], pass_bot=True)
+# 註冊影片處理器 (支援一般影片 video 與 影音訊息 video_note)
+bot.register_message_handler(handlers.gemini_video_handler, content_types=['video', 'video_note'], pass_bot=True)
 bot.register_message_handler(handlers.gemini_private_handler, content_types=['text'], pass_bot=True, func=lambda m: m.chat.type == "private")
 
 bot.register_callback_query_handler(handlers.model_callback, func=lambda c: (c.data or "").startswith("model:"), pass_bot=True)
