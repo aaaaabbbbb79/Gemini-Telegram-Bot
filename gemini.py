@@ -68,8 +68,14 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
 
     async with lock:
         try:
-            # 強制將 contents 解包
-            response = await chat.send_message(contents if isinstance(contents, str) else contents)
+            # 1. 判斷 contents 型態並發送訊息
+            if isinstance(contents, list):
+                # 這裡最保險的做法是直接用 model 生成，繞過 chat 的 list 檢查
+                response = await model.generate_content(contents)
+            else:
+                response = await chat.send_message(contents)
+            
+            # 2. 務必將結果賦值給 full_response
             full_response = response.text
 
             # 3. 更新訊息顯示
@@ -81,12 +87,15 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
                     parse_mode="MarkdownV2"
                 )
             except Exception:
-                # Markdown 失敗則用純文字
+                # 如果 Markdown 失敗，改用純文字發送
                 await bot.edit_message_text(
                     full_response,
                     chat_id=sent_message.chat.id,
                     message_id=sent_message.message_id
                 )
+        except Exception as e:
+            print(f"發送訊息失敗: {e}")
+            full_response = "處理失敗，請稍後再試。"
 
             # 4. 儲存對話紀錄
             try:
