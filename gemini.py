@@ -37,12 +37,13 @@ def get_user_error_message(error: Exception) -> str:
     return error_info
 
 async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) -> str | None:
-    # 1. 發送正在思考的提示
+    # 1. 發送提示
     sent_message = await bot.reply_to(message, "🤖 Gemini is thinking...")
     
     session = await init_user(message.from_user.id)
     chat = session.get("chat")
-    model = session.get("model")  # 從 session 取得 model 實例
+    # 【關鍵修正】從 session 或 chat 中獲取 model 實例
+    model = session.get("model")
     lock = session.get("lock")
     
     if chat is None or model is None:
@@ -58,8 +59,8 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
     current_time = datetime.datetime.utcnow() + tz_delta
     current_time_str = current_time.strftime("%Y-%m-%d %H:%M")
     
-    # 記錄原始 prompt 以供儲存
-    original_prompt = contents if isinstance(contents, str) else "[多媒體內容]"
+    # 記錄原始 prompt
+    original_prompt = contents if isinstance(contents, str) else "[多媒體對話]"
     
     if isinstance(contents, str):
         contents = f"[System Time: {current_time_str}]\n{contents}"
@@ -68,18 +69,16 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
 
     async with lock:
         try:
-            # 1. 執行內容生成 (根據型態選擇方法)
+            # 2. 判斷 contents 型態並發送訊息
             if isinstance(contents, list):
-                # 針對包含影片/圖片的清單，使用 generate_content 避開 chat 模式的格式限制
+                # 解決 ValueError: got <class 'list'> 的最佳方案
                 response = await model.generate_content(contents)
             else:
-                # 純文字則使用 chat 模式保留對話上下文
                 response = await chat.send_message(contents)
             
-            # 2. 取得生成的文字內容
             full_response = response.text
 
-            # 3. 更新訊息顯示 (處理 MarkdownV2 渲染)
+            # 3. 更新訊息顯示
             try:
                 await bot.edit_message_text(
                     escape(full_response),
@@ -88,19 +87,17 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
                     parse_mode="MarkdownV2"
                 )
             except Exception:
-                # 若渲染失敗則退回純文字模式
                 await bot.edit_message_text(
                     full_response,
                     chat_id=sent_message.chat.id,
                     message_id=sent_message.message_id
                 )
-
-            # 4. 成功後儲存對話紀錄並回傳
+            
+            # 成功後儲存
             await save_turn(message.from_user.id, original_prompt, full_response)
             return full_response
 
         except Exception as e:
-            # 錯誤路徑：列印異常、顯示錯誤提示並返回 None
             traceback.print_exc()
             error_msg = get_user_error_message(e)
             try:
