@@ -2,6 +2,7 @@ import io
 import time
 import traceback
 import datetime
+import asyncio
 from google.genai import errors
 from telebot.types import Message
 from md2tgmd import escape
@@ -37,14 +38,14 @@ def get_user_error_message(error: Exception) -> str:
     return error_info
 
 async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) -> str | None:
-    # 1. 發送提示
+    # 1. 發送思考中的初始訊息
     sent_message = await bot.reply_to(message, "🤖 Gemini is thinking...")
     
-    session = await init_user(message.from_user.id)
-    chat = session.get("chat")
-    # 【關鍵修正】從 session 或 chat 中獲取 model 實例
-    model = session.get("model")
-    lock = session.get("lock")
+    # 2. 獲取使用者 session
+    session_data = await init_user(message.from_user.id)
+    chat = session_data.get("chat")
+    model = session_data.get("model")
+    lock = session_data.get("lock")
     
     if chat is None or model is None:
         await bot.edit_message_text(
@@ -59,26 +60,29 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
     current_time = datetime.datetime.utcnow() + tz_delta
     current_time_str = current_time.strftime("%Y-%m-%d %H:%M")
     
-    # 記錄原始 prompt
-    original_prompt = contents if isinstance(contents, str) else "[多媒體對話]"
+    # 記錄原始 prompt 以供存檔
+    original_prompt = contents if isinstance(contents, str) else "[多媒體內容分析]"
     
     if isinstance(contents, str):
         contents = f"[System Time: {current_time_str}]\n{contents}"
 
-    full_response = None
+    full_response = ""
 
+    # 使用 lock 確保同個使用者不會同時觸發多個生成任務
     async with lock:
         try:
-            # 2. 判斷 contents 型態並發送訊息
+            # 3. 執行內容生成
             if isinstance(contents, list):
-                # 解決 ValueError: got <class 'list'> 的最佳方案
+                # 影片或多媒體內容使用 generate_content 避開 chat 模式對列表的限制
                 response = await model.generate_content(contents)
             else:
+                # 純文字維持使用 chat 模式以保留對話上下文
                 response = await chat.send_message(contents)
             
+            # 4. 取得生成文字
             full_response = response.text
 
-            # 3. 更新訊息顯示
+            # 5. 更新 Telegram UI
             try:
                 await bot.edit_message_text(
                     escape(full_response),
@@ -87,13 +91,14 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
                     parse_mode="MarkdownV2"
                 )
             except Exception:
+                # Markdown 渲染失敗時降級為純文字
                 await bot.edit_message_text(
                     full_response,
                     chat_id=sent_message.chat.id,
                     message_id=sent_message.message_id
                 )
             
-            # 成功後儲存
+            # 6. 成功後儲存紀錄
             await save_turn(message.from_user.id, original_prompt, full_response)
             return full_response
 
@@ -101,8 +106,9 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
             traceback.print_exc()
             error_msg = get_user_error_message(e)
             try:
+                # 發生報錯時，在 UI 顯示錯誤原因
                 await bot.edit_message_text(
-                    error_msg,
+                    f"❌ {error_msg}",
                     chat_id=sent_message.chat.id,
                     message_id=sent_message.message_id
                 )
