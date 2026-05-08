@@ -62,7 +62,7 @@ def _fetch_available_models() -> list[str]:
                 models.append(name)
     except Exception as e:
         print(f"Fetch models error: {e}")
-        return ["gemini-3.1-flash-lite-preview", "gemini-1.5-flash-latest", "gemini-2.0-flash-exp"]
+        return ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-exp"]
     return sorted(set(models))
 
 async def list_available_models(force_refresh: bool = False) -> list[str]:
@@ -79,7 +79,7 @@ async def init_user(user_id: int) -> UserSession:
         lock = Lock()
         model = await to_thread(get_user_model, user_id)
         if not model:
-            model = "gemini-3.1-flash-lite-preview"
+            model = "gemini-1.5-flash"
             await to_thread(set_user_model, user_id, model)
         history = await to_thread(load_history, user_id, conf["max_history_turns"])
         chat = get_client().aio.chats.create(model=model, history=history)
@@ -114,23 +114,26 @@ async def clear_history(user_id: int) -> None:
 def _normalize_contents_for_history(contents: str | list[Any]) -> str:
     if isinstance(contents, str):
         return contents
+    # 支援圖片與影片的紀錄顯示
     caption = ""
+    has_media = False
     for item in contents:
         if isinstance(item, str):
             caption = item.strip()
-            break
-    return f"[Image] {caption}" if caption else "[Image]"
+        else:
+            has_media = True
+    
+    prefix = "[Media]" if has_media else ""
+    return f"{prefix} {caption}".strip() if prefix or caption else "[Multi-modal Content]"
 
-# --- 補回關鍵零件：save_turn ---
 async def save_turn(user_id: int, contents: str | list[Any], model_text: str) -> None:
     if not model_text or not model_text.strip():
         return
-    session = await init_user(user_id)
-    model = session["model"]
-    if model is None:
+    
+    session = chat_dict.get(user_id)
+    if not session or session["model"] is None:
         return
+    
     user_text = _normalize_contents_for_history(contents)
-    await to_thread(append_turn, user_id, model, user_text, model_text, conf["max_history_turns"])
-    # 確保對話紀錄同步更新至 AsyncChat 對象
-    history = await to_thread(load_history, user_id, conf["max_history_turns"])
-    session["chat"] = get_client().aio.chats.create(model=model, history=history)
+    # 僅執行資料庫寫入，不在此處重建 chat 物件以避免連線洩漏
+    await to_thread(append_turn, user_id, session["model"], user_text, model_text, conf["max_history_turns"])
