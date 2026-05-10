@@ -1,5 +1,6 @@
 from google.genai.chats import AsyncChat
 from google import genai
+from google.genai import types  # 必須引入 types 進行格式封裝
 from asyncio import Lock, to_thread
 import asyncio
 from time import time
@@ -36,7 +37,7 @@ EXCLUDED_MODEL_NAME_PARTS = (
 
 def init_client(api_key: str) -> None:
     global client
-    # 這裡建議加上 http_options 以減少連線洩漏問題
+    # 使用 v1alpha 版本以支援最新的 3.1 功能並減少連線問題
     client = genai.Client(api_key=api_key, http_options={'api_version': 'v1alpha'})
 
 def get_client() -> genai.Client:
@@ -76,58 +77,57 @@ async def list_available_models(force_refresh: bool = False) -> list[str]:
     model_cache["updated_at"] = now
     return models
 
+def _format_history_for_sdk(raw_history: list) -> list[types.Content]:
+    """將資料庫載入的原始歷史轉換為 SDK 要求的 Content 物件列表"""
+    formatted = []
+    for turn in raw_history:
+        # 假設 turn 格式為 [user_text, model_text]
+        if len(turn) >= 2:
+            formatted.append(types.Content(role="user", parts=[types.Part.from_text(text=turn[0])]))
+            formatted.append(types.Content(role="model", parts=[types.Part.from_text(text=turn[1])]))
+    return formatted
+
 async def init_user(user_id: int) -> UserSession:
     """
-    【自我修復邏輯】：如果記憶體中的 session 不見了，自動從資料庫恢復模型設定與歷史紀錄。
-    這解決了「過了 15 分鐘就失憶」以及「必須重新選模型」的問題。
+    強化的恢復邏輯：即使記憶體快取失效，也會從資料庫完美恢復對話脈絡。
     """
     if user_id not in chat_dict:
         lock = Lock()
-        # 1. 從資料庫讀取上次使用的模型
+        # 1. 恢復模型選擇
         model = await to_thread(get_user_model, user_id)
         if not model:
-            # 如果資料庫也沒紀錄，才給預設值
             model = "gemini-3.1-flash-lite"
             await to_thread(set_user_model, user_id, model)
         
-        # 確保模型名稱帶有正確的前綴，避免 API 報錯
         full_model_name = model if model.startswith("models/") else f"models/{model}"
         
-        # 2. 【關鍵】自動載入歷史紀錄，讓對話得以延續
+        # 2. 載入並格式化歷史紀錄
         try:
-            history = await to_thread(load_history, user_id, conf["max_history_turns"])
+            raw_history = await to_thread(load_history, user_id, conf["max_history_turns"])
+            history = _format_history_for_sdk(raw_history)
         except Exception as e:
             print(f"Load history error for user {user_id}: {e}")
             history = []
 
-        # 3. 重新建立 chat 物件並繼承歷史
+        # 3. 建立帶有記憶的 chat 物件
         chat = get_client().aio.chats.create(model=full_model_name, history=history)
         chat_dict[user_id] = {"chat": chat, "lock": lock, "model": model}
-        print(f"DEBUG: [User {user_id}] Session 恢復成功，模型: {full_model_name}, 歷史紀錄共 {len(history)} 筆")
+        print(f"DEBUG: [User {user_id}] 成功恢復 {len(history)//2} 組對話記憶，使用模型: {full_model_name}")
         
     return chat_dict[user_id]
 
 async def select_model(user_id: int, new_model: str) -> str:
-    """
-    切換模型時，依然保留現有的對話歷史，實現平滑過度。
-    """
-    # 獲取舊有的 lock，避免操作衝突
-    if user_id in chat_dict:
-        lock = chat_dict[user_id]["lock"]
-    else:
-        lock = Lock()
-
-    async with lock:
-        # 1. 載入當前歷史
-        history = await to_thread(load_history, user_id, conf["max_history_turns"])
-        full_model_name = new_model if new_model.startswith("models/") else f"models/{new_model}"
+    """切換模型時，透過重新封裝歷史紀錄來確保上下文不中斷。"""
+    session = await init_user(user_id)
+    async with session["lock"]:
+        raw_history = await to_thread(load_history, user_id, conf["max_history_turns"])
+        history = _format_history_for_sdk(raw_history)
         
-        # 2. 使用新模型建立 chat，但餵入舊歷史
+        full_model_name = new_model if new_model.startswith("models/") else f"models/{new_model}"
         new_chat = get_client().aio.chats.create(model=full_model_name, history=history)
         
-        # 3. 更新資料庫與記憶體快取
         await to_thread(set_user_model, user_id, new_model)
-        chat_dict[user_id] = {"chat": new_chat, "lock": lock, "model": new_model}
+        chat_dict[user_id] = {"chat": new_chat, "lock": session["lock"], "model": new_model}
         return new_model
 
 async def get_current_model(user_id: int) -> str | None:
@@ -142,7 +142,6 @@ async def clear_history(user_id: int) -> None:
             session["chat"] = None
             return
         await to_thread(clear_user_history, user_id)
-        # 清除歷史後，建立一個全新的空白 chat
         full_model_name = model if model.startswith("models/") else f"models/{model}"
         new_chat = get_client().aio.chats.create(model=full_model_name)
         session["chat"] = new_chat
@@ -150,7 +149,6 @@ async def clear_history(user_id: int) -> None:
 def _normalize_contents_for_history(contents: str | list[Any]) -> str:
     if isinstance(contents, str):
         return contents
-    # 支援圖片與影片的紀錄顯示
     caption = ""
     has_media = False
     for item in contents:
@@ -171,5 +169,4 @@ async def save_turn(user_id: int, contents: str | list[Any], model_text: str) ->
         return
     
     user_text = _normalize_contents_for_history(contents)
-    # 僅執行資料庫寫入
     await to_thread(append_turn, user_id, session["model"], user_text, model_text, conf["max_history_turns"])
