@@ -32,7 +32,6 @@ EXCLUDED_MODEL_NAME_PARTS = ("computer-use", "customtools", "embedding", "roboti
 # --- 客戶端初始化 ---
 def init_client(api_key: str) -> None:
     global client
-    # 使用穩定版 API 確保連線穩定
     client = genai.Client(api_key=api_key, http_options={'api_version': 'v1alpha'})
 
 def get_client() -> genai.Client:
@@ -69,15 +68,15 @@ async def list_available_models(force_refresh: bool = False) -> list[str]:
     model_cache["updated_at"] = now
     return models
 
-# --- 核心記憶處理 ---
+# --- 核心記憶處理修正 ---
 def _format_history_for_sdk(raw_history: list) -> list[types.Content]:
     """
-    核心修復：強制將資料庫角色標籤映射為 SDK 認可的 'user' 與 'model'。
+    修正點：確保從 storage 讀出的資料能正確映射為 SDK 認可的 role。
     """
     formatted = []
     for turn in raw_history:
+        # 假設 storage 回傳的是 (role, content) 的 tuple 列表
         if len(turn) >= 2:
-            # 確保角色標籤正確
             role = "user" if turn[0] == "user" else "model"
             content_text = str(turn[1])
             formatted.append(types.Content(
@@ -88,19 +87,19 @@ def _format_history_for_sdk(raw_history: list) -> list[types.Content]:
 
 async def init_user(user_id: int, force_reload: bool = False) -> UserSession:
     """
-    初始化使用者會話，並強制從資料庫加載歷史紀錄以維持記憶。
+    初始化時從資料庫加載歷史，確保對話能延續。
     """
     if user_id not in chat_dict or force_reload:
         lock = Lock()
-        # 1. 取得使用者偏好模型
         model = await to_thread(get_user_model, user_id) or "gemini-3.1-flash-lite"
         full_model_name = model if model.startswith("models/") else f"models/{model}"
         
-        # 2. 從資料庫讀取對話歷史 (解決失憶問題)
-        raw_history = await to_thread(load_history, user_id, conf.get("max_history_turns", 10))
+        # 讀取 config 設定的歷史長度，預設 10 輪
+        limit = conf.get("max_history_turns", 10)
+        raw_history = await to_thread(load_history, user_id, limit)
         history = _format_history_for_sdk(raw_history)
         
-        # 3. 建立帶有歷史紀錄的 AsyncChat
+        # 建立帶有歷史紀錄的 chat 物件
         chat = get_client().aio.chats.create(model=full_model_name, history=history)
         chat_dict[user_id] = {"chat": chat, "lock": lock, "model": model}
         
@@ -109,7 +108,8 @@ async def init_user(user_id: int, force_reload: bool = False) -> UserSession:
 async def select_model(user_id: int, new_model: str) -> str:
     session = await init_user(user_id)
     async with session["lock"]:
-        raw_history = await to_thread(load_history, user_id, conf.get("max_history_turns", 10))
+        limit = conf.get("max_history_turns", 10)
+        raw_history = await to_thread(load_history, user_id, limit)
         history = _format_history_for_sdk(raw_history)
         full_model_name = new_model if new_model.startswith("models/") else f"models/{new_model}"
         
@@ -127,27 +127,27 @@ async def clear_history(user_id: int) -> None:
     session = await init_user(user_id)
     async with session["lock"]:
         await to_thread(clear_user_history, user_id)
-        # 清空資料庫後，重新建立一個不帶歷史紀錄的會話
         new_chat = get_client().aio.chats.create(model=session["model"])
         session["chat"] = new_chat
 
 async def save_turn(user_id: int, contents: str | list[Any], model_text: str) -> None:
     """
-    將當前對話存入資料庫，確保下次 init_user 時歷史能被讀回。
+    存入資料庫，並同步更新當前 session 的 history。
     """
     if not model_text or not model_text.strip(): return
     session = chat_dict.get(user_id)
-    if not session or session["model"] is None: return
+    if not session: return
     
     user_text = _normalize_contents_for_history(contents)
-    await to_thread(
-        append_turn, 
-        user_id, 
-        session["model"], 
-        user_text, 
-        model_text, 
-        conf.get("max_history_turns", 10)
-    )
+    limit = conf.get("max_history_turns", 10)
+    
+    # 1. 持久化到資料庫
+    await to_thread(append_turn, user_id, session["model"], user_text, model_text, limit)
+    
+    # 2. 同步更新當前運行的 SDK 物件歷史，避免下一次請求時失憶
+    if session["chat"] and hasattr(session["chat"], "_history"):
+        session["chat"]._history.append(types.Content(role="user", parts=[types.Part.from_text(text=user_text)]))
+        session["chat"]._history.append(types.Content(role="model", parts=[types.Part.from_text(text=model_text)]))
 
 def _normalize_contents_for_history(contents: str | list[Any]) -> str:
     if isinstance(contents, str): return contents
