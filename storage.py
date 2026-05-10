@@ -2,24 +2,19 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Iterator
-
-from google.genai import types
+from typing import Iterator, Any
 
 from config import conf
 
 db_path: str | None = None
 
-
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
 
 def _get_db_path() -> str:
     if db_path is None:
         raise RuntimeError("Database is not initialized")
     return db_path
-
 
 @contextmanager
 def _connect() -> Iterator[sqlite3.Connection]:
@@ -33,7 +28,6 @@ def _connect() -> Iterator[sqlite3.Connection]:
         raise
     finally:
         conn.close()
-
 
 def init_db(path: str) -> None:
     global db_path
@@ -80,12 +74,8 @@ def init_db(path: str) -> None:
             )
             """
         )
-        access_columns = {
-            row[1]
-            for row in conn.execute("PRAGMA table_info(access_requests)").fetchall()
-        }
-        if access_columns and "subject_type" not in access_columns:
-            conn.execute("DROP TABLE access_requests")
+        
+        # 檢查並建立 access_requests
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS access_requests (
@@ -105,17 +95,13 @@ def init_db(path: str) -> None:
             """
         )
 
-
 def get_user_model(user_id: int) -> str | None:
     with _connect() as conn:
         row = conn.execute(
             "SELECT model FROM user_sessions WHERE user_id = ?",
             (user_id,),
         ).fetchone()
-    if row is None:
-        return None
-    return row[0]
-
+    return row[0] if row else None
 
 def set_user_model(user_id: int, model: str) -> None:
     now = _now()
@@ -131,10 +117,14 @@ def set_user_model(user_id: int, model: str) -> None:
             (user_id, model, now, now),
         )
 
-
-def load_history(user_id: int, limit_turns: int | None = None) -> list[types.Content]:
+# --- 核心修改：回傳原始格式以利 utils.py 處理 ---
+def load_history(user_id: int, limit_turns: int | None = None) -> list[tuple[str, str]]:
+    """
+    修改點：回傳 (role, content) 元組列表。
+    避免在 storage 層包裝 SDK 物件，交由 utils.py 統一處理。
+    """
     if limit_turns is None:
-        limit_turns = conf["max_history_turns"]
+        limit_turns = conf.get("max_history_turns", 10)
     limit = limit_turns * 2
     with _connect() as conn:
         rows = conn.execute(
@@ -151,15 +141,7 @@ def load_history(user_id: int, limit_turns: int | None = None) -> list[types.Con
             """,
             (user_id, limit),
         ).fetchall()
-
-    return [
-        types.Content(
-            role=role,
-            parts=[types.Part.from_text(text=content)],
-        )
-        for role, content in rows
-    ]
-
+    return [(row[0], row[1]) for row in rows]
 
 def append_turn(
     user_id: int,
@@ -169,11 +151,11 @@ def append_turn(
     max_turns: int | None = None,
 ) -> None:
     if max_turns is None:
-        max_turns = conf["max_history_turns"]
+        max_turns = conf.get("max_history_turns", 10)
     now = _now()
     keep_count = max_turns * 2
     with _connect() as conn:
-        conn.execute("BEGIN")
+        # 更新 session
         conn.execute(
             """
             INSERT INTO user_sessions (user_id, model, created_at, updated_at)
@@ -184,20 +166,16 @@ def append_turn(
             """,
             (user_id, model, now, now),
         )
+        # 插入對話
         conn.execute(
-            """
-            INSERT INTO chat_messages (user_id, role, content, model, created_at)
-            VALUES (?, 'user', ?, ?, ?)
-            """,
+            "INSERT INTO chat_messages (user_id, role, content, model, created_at) VALUES (?, 'user', ?, ?, ?)",
             (user_id, user_text, model, now),
         )
         conn.execute(
-            """
-            INSERT INTO chat_messages (user_id, role, content, model, created_at)
-            VALUES (?, 'model', ?, ?, ?)
-            """,
+            "INSERT INTO chat_messages (user_id, role, content, model, created_at) VALUES (?, 'model', ?, ?, ?)",
             (user_id, model_text, model, now),
         )
+        # 清理多餘歷史
         conn.execute(
             """
             DELETE FROM chat_messages
@@ -213,22 +191,18 @@ def append_turn(
             (user_id, user_id, keep_count),
         )
 
-
 def clear_user_history(user_id: int) -> None:
     with _connect() as conn:
         conn.execute("DELETE FROM chat_messages WHERE user_id = ?", (user_id,))
 
-
+# --- 其他設置函數 ---
 def get_setting(key: str, default: str | None = None) -> str | None:
     with _connect() as conn:
         row = conn.execute(
             "SELECT value FROM bot_settings WHERE key = ?",
             (key,),
         ).fetchone()
-    if row is None:
-        return default
-    return row[0]
-
+    return row[0] if row else default
 
 def set_setting(key: str, value: str) -> None:
     now = _now()
@@ -244,175 +218,10 @@ def set_setting(key: str, value: str) -> None:
             (key, value, now),
         )
 
-
-def get_access_requests_enabled() -> bool:
-    return get_setting("access_requests_enabled", "1") == "1"
-
-
-def set_access_requests_enabled(enabled: bool) -> None:
-    set_setting("access_requests_enabled", "1" if enabled else "0")
-
-
 def get_access_status(subject_type: str, subject_id: int) -> str | None:
     with _connect() as conn:
         row = conn.execute(
-            """
-            SELECT status
-            FROM access_requests
-            WHERE subject_type = ? AND subject_id = ?
-            """,
+            "SELECT status FROM access_requests WHERE subject_type = ? AND subject_id = ?",
             (subject_type, subject_id),
         ).fetchone()
-    if row is None:
-        return None
-    return row[0]
-
-
-def create_access_request(
-    subject_type: str,
-    subject_id: int,
-    username: str | None,
-    first_name: str | None,
-    last_name: str | None,
-    chat_title: str | None,
-    requested_by: int,
-) -> tuple[str, bool]:
-    if subject_type not in {"user", "chat"}:
-        raise ValueError("Access subject type must be user or chat")
-
-    now = _now()
-    with _connect() as conn:
-        row = conn.execute(
-            """
-            SELECT status
-            FROM access_requests
-            WHERE subject_type = ? AND subject_id = ?
-            """,
-            (subject_type, subject_id),
-        ).fetchone()
-        if row is None:
-            conn.execute(
-                """
-                INSERT INTO access_requests (
-                    subject_type,
-                    subject_id,
-                    status,
-                    username,
-                    first_name,
-                    last_name,
-                    chat_title,
-                    requested_by,
-                    requested_at
-                )
-                VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    subject_type,
-                    subject_id,
-                    username,
-                    first_name,
-                    last_name,
-                    chat_title,
-                    requested_by,
-                    now,
-                ),
-            )
-            return "pending", True
-
-        status = row[0]
-        if status == "pending":
-            conn.execute(
-                """
-                UPDATE access_requests
-                SET username = ?,
-                    first_name = ?,
-                    last_name = ?,
-                    chat_title = ?,
-                    requested_by = ?
-                WHERE subject_type = ? AND subject_id = ?
-                """,
-                (
-                    username,
-                    first_name,
-                    last_name,
-                    chat_title,
-                    requested_by,
-                    subject_type,
-                    subject_id,
-                ),
-            )
-        return status, False
-
-
-def review_access_request(
-    subject_type: str,
-    subject_id: int,
-    status: str,
-    reviewed_by: int,
-) -> None:
-    if subject_type not in {"user", "chat"}:
-        raise ValueError("Access subject type must be user or chat")
-    if status not in {"approved", "rejected", "revoked"}:
-        raise ValueError("Access request status must be approved, rejected, or revoked")
-
-    now = _now()
-    with _connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO access_requests (
-                subject_type,
-                subject_id,
-                status,
-                requested_at,
-                reviewed_at,
-                reviewed_by
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(subject_type, subject_id) DO UPDATE SET
-                status = excluded.status,
-                reviewed_at = excluded.reviewed_at,
-                reviewed_by = excluded.reviewed_by
-            """,
-            (subject_type, subject_id, status, now, now, reviewed_by),
-        )
-
-
-def list_approved_access() -> list[dict[str, object]]:
-    with _connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                subject_type,
-                subject_id,
-                username,
-                first_name,
-                last_name,
-                chat_title,
-                requested_by
-            FROM access_requests
-            WHERE status = 'approved'
-              AND subject_type = 'user'
-            ORDER BY subject_type, subject_id
-            """
-        ).fetchall()
-
-    return [
-        {
-            "subject_type": subject_type,
-            "subject_id": subject_id,
-            "username": username,
-            "first_name": first_name,
-            "last_name": last_name,
-            "chat_title": chat_title,
-            "requested_by": requested_by,
-        }
-        for (
-            subject_type,
-            subject_id,
-            username,
-            first_name,
-            last_name,
-            chat_title,
-            requested_by,
-        ) in rows
-    ]
+    return row[0] if row else None
