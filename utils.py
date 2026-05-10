@@ -70,7 +70,6 @@ def _format_history_for_sdk(raw_history: list) -> list[types.Content]:
     formatted = []
     for turn in raw_history:
         if len(turn) >= 2:
-            # 強制標籤對齊，解決 SDK 不認得非 user/model 標籤的問題
             role = "user" if turn[0] == "user" else "model"
             formatted.append(types.Content(
                 role=role, 
@@ -84,15 +83,18 @@ async def init_user(user_id: int, force_reload: bool = False) -> UserSession:
         model = await to_thread(get_user_model, user_id) or "gemini-3.1-flash-lite"
         full_model_name = model if model.startswith("models/") else f"models/{model}"
         
-        # 從資料庫撈出最近 10 輪對話
         raw_history = await to_thread(load_history, user_id, conf.get("max_history_turns", 10))
         history = _format_history_for_sdk(raw_history)
         
-        # 建立具備歷史記憶的對話
         chat = get_client().aio.chats.create(model=full_model_name, history=history)
         chat_dict[user_id] = {"chat": chat, "lock": lock, "model": model}
         
     return chat_dict[user_id]
+
+# --- 補回 handlers.py 需要的導出函數 ---
+async def get_current_model(user_id: int) -> str | None:
+    session = await init_user(user_id)
+    return session["model"]
 
 async def select_model(user_id: int, new_model: str) -> str:
     session = await init_user(user_id)
@@ -119,25 +121,16 @@ async def save_turn(user_id: int, contents: str | list[Any], model_text: str) ->
     if not session: return
     
     user_text = _normalize_contents_for_history(contents)
+    limit = conf.get("max_history_turns", 10)
     
-    # 1. 寫入資料庫 (永久記憶)
-    await to_thread(
-        append_turn, 
-        user_id, 
-        session["model"], 
-        user_text, 
-        model_text, 
-        conf.get("max_history_turns", 10)
-    )
+    # 1. 持久化到資料庫
+    await to_thread(append_turn, user_id, session["model"], user_text, model_text, limit)
     
-    # 2. 暴力同步：直接手動更新正在運行的 chat 物件歷史 (瞬間記憶)
-    # 這樣下一句「所以我各項總共幾顆星」進來時，SDK 裡面已經有剛才的運勢內容了
-    if session["chat"]:
-        # 存入使用者說的話
+    # 2. 暴力同步記憶
+    if session["chat"] and hasattr(session["chat"], "_history"):
         session["chat"]._history.append(
             types.Content(role="user", parts=[types.Part.from_text(text=user_text)])
         )
-        # 存入機器人回的話
         session["chat"]._history.append(
             types.Content(role="model", parts=[types.Part.from_text(text=model_text)])
         )
