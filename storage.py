@@ -74,8 +74,6 @@ def init_db(path: str) -> None:
             )
             """
         )
-        
-        # 檢查並建立 access_requests
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS access_requests (
@@ -94,6 +92,8 @@ def init_db(path: str) -> None:
             )
             """
         )
+
+# --- 基礎對話功能 ---
 
 def get_user_model(user_id: int) -> str | None:
     with _connect() as conn:
@@ -117,12 +117,7 @@ def set_user_model(user_id: int, model: str) -> None:
             (user_id, model, now, now),
         )
 
-# --- 核心修改：回傳原始格式以利 utils.py 處理 ---
 def load_history(user_id: int, limit_turns: int | None = None) -> list[tuple[str, str]]:
-    """
-    修改點：回傳 (role, content) 元組列表。
-    避免在 storage 層包裝 SDK 物件，交由 utils.py 統一處理。
-    """
     if limit_turns is None:
         limit_turns = conf.get("max_history_turns", 10)
     limit = limit_turns * 2
@@ -155,7 +150,6 @@ def append_turn(
     now = _now()
     keep_count = max_turns * 2
     with _connect() as conn:
-        # 更新 session
         conn.execute(
             """
             INSERT INTO user_sessions (user_id, model, created_at, updated_at)
@@ -166,7 +160,6 @@ def append_turn(
             """,
             (user_id, model, now, now),
         )
-        # 插入對話
         conn.execute(
             "INSERT INTO chat_messages (user_id, role, content, model, created_at) VALUES (?, 'user', ?, ?, ?)",
             (user_id, user_text, model, now),
@@ -175,7 +168,6 @@ def append_turn(
             "INSERT INTO chat_messages (user_id, role, content, model, created_at) VALUES (?, 'model', ?, ?, ?)",
             (user_id, model_text, model, now),
         )
-        # 清理多餘歷史
         conn.execute(
             """
             DELETE FROM chat_messages
@@ -195,7 +187,8 @@ def clear_user_history(user_id: int) -> None:
     with _connect() as conn:
         conn.execute("DELETE FROM chat_messages WHERE user_id = ?", (user_id,))
 
-# --- 其他設置函數 ---
+# --- 系統設置與權限 (補回遺失函數) ---
+
 def get_setting(key: str, default: str | None = None) -> str | None:
     with _connect() as conn:
         row = conn.execute(
@@ -225,3 +218,72 @@ def get_access_status(subject_type: str, subject_id: int) -> str | None:
             (subject_type, subject_id),
         ).fetchone()
     return row[0] if row else None
+
+def create_access_request(
+    subject_type: str,
+    subject_id: int,
+    username: str | None,
+    first_name: str | None,
+    last_name: str | None,
+    chat_title: str | None,
+    requested_by: int,
+) -> tuple[str, bool]:
+    now = _now()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT status FROM access_requests WHERE subject_type = ? AND subject_id = ?",
+            (subject_type, subject_id),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                """
+                INSERT INTO access_requests (
+                    subject_type, subject_id, status, username, 
+                    first_name, last_name, chat_title, requested_by, requested_at
+                )
+                VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+                """,
+                (subject_type, subject_id, username, first_name, last_name, chat_title, requested_by, now),
+            )
+            return "pending", True
+        return row[0], False
+
+def review_access_request(
+    subject_type: str,
+    subject_id: int,
+    status: str,
+    reviewed_by: int,
+) -> None:
+    now = _now()
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE access_requests
+            SET status = ?, reviewed_at = ?, reviewed_by = ?
+            WHERE subject_type = ? AND subject_id = ?
+            """,
+            (status, now, reviewed_by, subject_type, subject_id),
+        )
+
+def list_approved_access() -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT subject_type, subject_id, username, first_name, last_name, chat_title, requested_by
+            FROM access_requests
+            WHERE status = 'approved' AND subject_type = 'user'
+            ORDER BY subject_id
+            """
+        ).fetchall()
+    return [
+        {
+            "subject_type": r[0], "subject_id": r[1], "username": r[2],
+            "first_name": r[3], "last_name": r[4], "chat_title": r[5], "requested_by": r[6]
+        } for r in rows
+    ]
+
+def get_access_requests_enabled() -> bool:
+    return get_setting("access_requests_enabled", "1") == "1"
+
+def set_access_requests_enabled(enabled: bool) -> None:
+    set_setting("access_requests_enabled", "1" if enabled else "0")
