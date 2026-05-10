@@ -29,21 +29,35 @@ download_pic_notify     =       conf["download_pic_notify"]
 MODEL_CALLBACK_PREFIX   =       "model:"
 ACCESS_CALLBACK_PREFIX  =       "access:"
 
+# 定義功能名稱映射，用於存檔時產生人類可讀的記憶內容
+ACTION_NAMES = {
+    "astro_daily": "今日星象", 
+    "astro_lucky": "幸運指南", 
+    "astro_advice": "星象建議", 
+    "astro_stress": "舒壓療癒", 
+    "astro_motivation": "動力激勵", 
+    "astro_reflection": "心靈練習",
+    "match_final": "星座配對"
+}
+
 # --- 核心邏輯：執行並同步存檔以維持 30 分鐘後的記憶 ---
 
-async def execute_and_save(user_id, bot, message, prompt, image=None):
-    # 1. 預存紀錄
-    save_prompt = prompt if not image else f"[多媒體對話] {prompt}"
+async def execute_and_save(user_id, bot, message, prompt, image=None, virtual_prompt=None):
+    """
+    virtual_prompt: 如果是按鈕觸發，可以傳入一個更口語化的文字作為使用者的發言紀錄
+    """
+    # 1. 預存紀錄 (優先使用虛擬口語化 Prompt 存入記憶)
+    display_prompt = virtual_prompt if virtual_prompt else prompt
+    save_prompt = display_prompt if not image else f"[多媒體對話] {display_prompt}"
+    
     await save_turn(user_id, save_prompt, "")
     await asyncio.sleep(0.1)
 
-    # 2. 內容判斷 (核心修正)
-    # 這裡我們不要預先打包 [image, prompt]，而是直接傳遞
+    # 2. 內容判斷
     contents = [image, prompt] if image else prompt
 
     try:
         # 3. 呼叫 gemini_stream
-        # 注意：如果傳入的是 list，確保 gemini_stream 內部沒有再包一層 []
         response = await gemini.gemini_stream(bot, message, contents)
     except Exception as e:
         print(f"Gemini 處理出錯: {e}")
@@ -233,13 +247,14 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
                 "hourly": f"請詳細列出「{city}」今天逐小時的天氣變化。針對「{gender}性{sign}」的活動規律，給予準確的降雨與溫差提醒。",
                 "weekly": f"請分析「{city}」未來一週的天氣趨勢。為「{gender}性{sign}」規劃這週最適合外出的日子。"
             }
-            await execute_and_save(u_id, bot, call.message, weather_prompts.get(t_type, f"查詢{city}天氣"))
+            # 天氣部分也注入虛擬 Prompt 強化記憶
+            v_prompt = f"我想查詢 {city} 的 {t_name} 天氣預報"
+            await execute_and_save(u_id, bot, call.message, weather_prompts.get(t_type, f"查詢{city}天氣"), virtual_prompt=v_prompt)
 
         elif data.startswith("astro_"):
             parts = data.split(":")
             action, sign, gender = parts[0], parts[1], parts[2]
-            action_names = {"astro_daily": "今日星象", "astro_lucky": "幸運指南", "astro_advice": "星象建議", "astro_stress": "舒壓療癒", "astro_motivation": "動力激勵", "astro_reflection": "心靈練習"}
-            display_name = action_names.get(action, "星象功能")
+            display_name = ACTION_NAMES.get(action, "星象功能")
             text = f"🔮 **{sign}({gender}) - {display_name}**\n\n請選擇您想查看的時間維度："
             await bot.edit_message_text(escape(text), chat_id=chat_id, message_id=msg_id, reply_markup=build_time_picker_keyboard(action, sign, gender), parse_mode="MarkdownV2")
 
@@ -266,12 +281,15 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
             time_map = {"day": "今日/當天", "month": "本月/當月", "year": "今年/年度", "life": "這輩子/此生/本命"}
             t_text = time_map.get(time_frame, "今日")
 
+            # 建立虛擬 Prompt 注入記憶 (解決失憶核心)
             if action == "match_final":
+                virtual_text = f"我想查看 {my_sign}({my_gender}) 與 {p_sign}({p_gender}) 的 {t_text}配對"
                 if time_frame == "life":
                     user_prompt = f"請深入分析一個「{my_gender}性{my_sign}」與一個「{p_gender}性{p_sign}」這輩子的「宿命緣分」。包含長期的相處課題、兩人是否適合共同生活、靈魂契合度以及白頭偕老的關鍵建議。"
                 else:
                     user_prompt = f"請詳細分析一個「{my_gender}性{my_sign}」與一個「{p_gender}性{p_sign}」在「{t_text}」的星座配對運勢。包含默契指數、溝通建議以及相處小撇步。"
             else:
+                virtual_text = f"我想查看 {my_sign}({my_gender}) 的 {t_text}{ACTION_NAMES.get(action, '運勢')}"
                 prompts_life = {
                     "astro_daily": f"請從星象格局分析「{my_gender}性{my_sign}」這輩子的「生命核心目標」與命運基調。",
                     "astro_lucky": f"請解析「{my_gender}性{my_sign}」此生的「貴人格局」與能夠帶來長期好運的核心特質。",
@@ -291,7 +309,8 @@ async def astrology_callback(call: CallbackQuery, bot: TeleBot) -> None:
                 user_prompt = prompts_life.get(action) if time_frame == "life" else prompts_normal.get(action)
 
             await bot.answer_callback_query(call.id, text=f"正在啟動 {t_text} 的能量解析...")
-            await execute_and_save(u_id, bot, call.message, user_prompt or f"請分析{my_sign}的運勢")
+            # 關鍵修正：傳入 virtual_prompt 確保記憶同步
+            await execute_and_save(u_id, bot, call.message, user_prompt or f"請分析{my_sign}的運勢", virtual_prompt=virtual_text)
 
         elif data == "nav_back_to_zodiac":
             await bot.edit_message_text("請選擇您的 **星座**：", chat_id=chat_id, message_id=msg_id, reply_markup=build_zodiac_keyboard("select_sign"), parse_mode="MarkdownV2")
@@ -338,7 +357,6 @@ async def access_callback(call: CallbackQuery, bot: TeleBot) -> None:
     if action == "revoke":
         await revoke_access(subject_type, int(subject_id), call.from_user.id)
     else:
-        # 核對決策狀態：'approved' 或 'rejected'
         decision = "approved" if action == "approve" else "rejected"
         await review_access(decision, subject_type, int(subject_id), call.from_user.id)
     
@@ -378,33 +396,18 @@ async def gemini_photo_handler(message: Message, bot: TeleBot) -> None:
     image = Image.open(io.BytesIO(photo_file))
     await execute_and_save(message.from_user.id, bot, message, message.caption or "分析此圖", image=image)
 
-# --- 新增的影片處理邏輯 ---
-
 async def gemini_video_handler(message: Message, bot: TeleBot) -> None:
     """處理一般影片與影音訊息 (video_note)"""
     if not await ensure_authorized(message, bot): return
-    
-    # 提醒使用者正在處理 (影片分析較慢)
     sent_msg = await bot.reply_to(message, "🎬 正在接收並分析影片，請稍候...")
-    
     try:
-        # 取得影片物件 (支援 video 或 video_note)
         video_obj = message.video or message.video_note
         file_info = await bot.get_file(video_obj.file_id)
         video_file = await bot.download_file(file_info.file_path)
-        
-        # 標註影片類型與數據
         video_part = {"mime_type": "video/mp4", "data": video_file}
-        
-        # 取得文字描述，若無則提供預設
         caption = message.caption or "請分析這段影片的內容。"
-        
-        # 執行生成並存檔
         await execute_and_save(message.from_user.id, bot, message, caption, image=video_part)
-        
-        # 任務完成，刪除提示訊息
         await bot.delete_message(message.chat.id, sent_msg.message_id)
-        
     except Exception:
         traceback.print_exc()
         await bot.edit_message_text("❌ 影片分析失敗，請確認影片大小或格式是否正確。", message.chat.id, sent_msg.message_id)
