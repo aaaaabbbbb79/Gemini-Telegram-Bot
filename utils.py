@@ -22,6 +22,12 @@ class UserSession(TypedDict):
 
 chat_dict: dict[int, UserSession] = {}
 client: genai.Client | None = None
+model_cache: dict[str, object] = {
+    "models": [],
+    "updated_at": 0.0,
+}
+MODEL_CACHE_TTL = 3600
+EXCLUDED_MODEL_NAME_PARTS = ("computer-use", "customtools", "embedding", "robotics", "tts")
 
 def init_client(api_key: str) -> None:
     global client
@@ -32,8 +38,35 @@ def get_client() -> genai.Client:
         raise RuntimeError("Gemini client is not initialized")
     return client
 
+def _normalize_model_name(model_name: str) -> str:
+    return model_name.replace("models/", "")
+
+def _is_chat_model(model_name: str, supported_actions: list[str]) -> bool:
+    if not model_name.startswith("gemini-"): return False
+    if "generateContent" not in supported_actions: return False
+    return not any(part in model_name for part in EXCLUDED_MODEL_NAME_PARTS)
+
+def _fetch_available_models() -> list[str]:
+    models: list[str] = []
+    try:
+        for model in get_client().models.list():
+            name = _normalize_model_name(model.name)
+            if _is_chat_model(name, getattr(model, "supported_actions", [])):
+                models.append(name)
+    except Exception:
+        return ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-3.1-flash-lite"]
+    return sorted(set(models))
+
+async def list_available_models(force_refresh: bool = False) -> list[str]:
+    now = time()
+    if not force_refresh and model_cache["models"] and (now - model_cache["updated_at"] < MODEL_CACHE_TTL):
+        return model_cache["models"]
+    models = await to_thread(_fetch_available_models)
+    model_cache["models"] = models
+    model_cache["updated_at"] = now
+    return models
+
 def _format_history_for_sdk(raw_history: list) -> list[types.Content]:
-    """嚴格格式化歷史紀錄"""
     formatted = []
     for turn in raw_history:
         if len(turn) >= 2:
@@ -42,60 +75,17 @@ def _format_history_for_sdk(raw_history: list) -> list[types.Content]:
     return formatted
 
 async def init_user(user_id: int) -> UserSession:
-    """
-    強化的恢復邏輯，並加入 DEBUG 日誌。
-    """
     if user_id not in chat_dict:
         lock = Lock()
         model = await to_thread(get_user_model, user_id) or "gemini-3.1-flash-lite"
         full_model_name = model if model.startswith("models/") else f"models/{model}"
         
-        try:
-            raw_history = await to_thread(load_history, user_id, conf["max_history_turns"])
-            history = _format_history_for_sdk(raw_history)
-            print(f"🔄 [DEBUG] 使用者 {user_id} 從資料庫讀取到 {len(history)//2} 組歷史對話")
-        except Exception as e:
-            print(f"❌ [ERROR] 載入歷史失敗: {e}")
-            history = []
-
+        raw_history = await to_thread(load_history, user_id, conf["max_history_turns"])
+        history = _format_history_for_sdk(raw_history)
+        
         chat = get_client().aio.chats.create(model=full_model_name, history=history)
         chat_dict[user_id] = {"chat": chat, "lock": lock, "model": model}
-        
     return chat_dict[user_id]
-
-async def save_turn(user_id: int, contents: str | list[Any], model_text: str) -> None:
-    """
-    核心檢測點：確認對話是否有真正存進資料庫。
-    """
-    if not model_text or not model_text.strip():
-        return
-    
-    session = chat_dict.get(user_id)
-    if not session or session["model"] is None:
-        return
-    
-    user_text = _normalize_contents_for_history(contents)
-    
-    try:
-        # 同步執行資料庫寫入
-        await to_thread(append_turn, user_id, session["model"], user_text, model_text, conf["max_history_turns"])
-        print(f"✅ [DEBUG] 使用者 {user_id} 的對話已成功存入資料庫")
-        
-        # 手動同步記憶體中的 chat 歷史，防止 SDK 延遲
-        if session["chat"]:
-            session["chat"].history.append(types.Content(role="user", parts=[types.Part.from_text(text=user_text)]))
-            session["chat"].history.append(types.Content(role="model", parts=[types.Part.from_text(text=model_text)]))
-            print(f"📊 [DEBUG] 記憶體歷史更新完成，目前長度: {len(session['chat'].history)}")
-            
-    except Exception as e:
-        print(f"❌ [ERROR] 儲存對話失敗: {e}")
-
-# 以下為保持不變的輔助函數 ...
-def _normalize_contents_for_history(contents: str | list[Any]) -> str:
-    if isinstance(contents, str): return contents
-    caption = next((item.strip() for item in contents if isinstance(item, str)), "")
-    prefix = "[Media] " if any(not isinstance(item, str) for item in contents) else ""
-    return f"{prefix}{caption}".strip() or "[Multi-modal Content]"
 
 async def select_model(user_id: int, new_model: str) -> str:
     session = await init_user(user_id)
@@ -108,9 +98,34 @@ async def select_model(user_id: int, new_model: str) -> str:
         chat_dict[user_id] = {"chat": new_chat, "lock": session["lock"], "model": new_model}
         return new_model
 
+# --- 這次補上的關鍵函數 ---
+async def get_current_model(user_id: int) -> str | None:
+    """讓 handlers.py 能夠查詢目前使用的模型名稱"""
+    session = await init_user(user_id)
+    return session["model"]
+
 async def clear_history(user_id: int) -> None:
     session = await init_user(user_id)
     async with session["lock"]:
         await to_thread(clear_user_history, user_id)
         new_chat = get_client().aio.chats.create(model=session["model"])
         session["chat"] = new_chat
+
+async def save_turn(user_id: int, contents: str | list[Any], model_text: str) -> None:
+    if not model_text or not model_text.strip(): return
+    session = chat_dict.get(user_id)
+    if not session or session["model"] is None: return
+    
+    user_text = _normalize_contents_for_history(contents)
+    await to_thread(append_turn, user_id, session["model"], user_text, model_text, conf["max_history_turns"])
+    
+    # 同時手動更新記憶體歷史
+    if session["chat"]:
+        session["chat"].history.append(types.Content(role="user", parts=[types.Part.from_text(text=user_text)]))
+        session["chat"].history.append(types.Content(role="model", parts=[types.Part.from_text(text=model_text)]))
+
+def _normalize_contents_for_history(contents: str | list[Any]) -> str:
+    if isinstance(contents, str): return contents
+    caption = next((item.strip() for item in contents if isinstance(item, str)), "")
+    prefix = "[Media] " if any(not isinstance(item, str) for item in contents) else ""
+    return f"{prefix}{caption}".strip() or "[Multi-modal Content]"
