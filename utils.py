@@ -26,10 +26,12 @@ model_cache: dict[str, object] = {
     "models": [],
     "updated_at": 0.0,
 }
+MODEL_CACHE_TTL = 3600
+EXCLUDED_MODEL_NAME_PARTS = ("computer-use", "customtools", "embedding", "robotics", "tts")
 
+# --- 客戶端初始化 ---
 def init_client(api_key: str) -> None:
     global client
-    # 使用 v1alpha 版本
     client = genai.Client(api_key=api_key, http_options={'api_version': 'v1alpha'})
 
 def get_client() -> genai.Client:
@@ -37,6 +39,36 @@ def get_client() -> genai.Client:
         raise RuntimeError("Gemini client is not initialized")
     return client
 
+# --- 模型列表相關 (修復 ImportError 的關鍵) ---
+def _normalize_model_name(model_name: str) -> str:
+    return model_name.replace("models/", "")
+
+def _is_chat_model(model_name: str, supported_actions: list[str]) -> bool:
+    if not model_name.startswith("gemini-"): return False
+    if "generateContent" not in supported_actions: return False
+    return not any(part in model_name for part in EXCLUDED_MODEL_NAME_PARTS)
+
+def _fetch_available_models() -> list[str]:
+    models: list[str] = []
+    try:
+        for model in get_client().models.list():
+            name = _normalize_model_name(model.name)
+            if _is_chat_model(name, getattr(model, "supported_actions", [])):
+                models.append(name)
+    except Exception:
+        return ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-3.1-flash-lite"]
+    return sorted(set(models))
+
+async def list_available_models(force_refresh: bool = False) -> list[str]:
+    now = time()
+    if not force_refresh and model_cache["models"] and (now - model_cache["updated_at"] < MODEL_CACHE_TTL):
+        return model_cache["models"]
+    models = await to_thread(_fetch_available_models)
+    model_cache["models"] = models
+    model_cache["updated_at"] = now
+    return models
+
+# --- 歷史紀錄格式化 ---
 def _format_history_for_sdk(raw_history: list) -> list[types.Content]:
     formatted = []
     for turn in raw_history:
@@ -45,21 +77,18 @@ def _format_history_for_sdk(raw_history: list) -> list[types.Content]:
             formatted.append(types.Content(role="model", parts=[types.Part.from_text(text=turn[1])]))
     return formatted
 
+# --- 使用者會話管理 ---
 async def init_user(user_id: int) -> UserSession:
-    """修復後的恢復邏輯：移除會報錯的手動 history 操作"""
     if user_id not in chat_dict:
         lock = Lock()
         model = await to_thread(get_user_model, user_id) or "gemini-3.1-flash-lite"
         full_model_name = model if model.startswith("models/") else f"models/{model}"
         
-        # 從資料庫抓回記憶
         raw_history = await to_thread(load_history, user_id, conf["max_history_turns"])
         history = _format_history_for_sdk(raw_history)
         
-        # 建立對話，SDK 會自動管理後續記憶
         chat = get_client().aio.chats.create(model=full_model_name, history=history)
         chat_dict[user_id] = {"chat": chat, "lock": lock, "model": model}
-        
     return chat_dict[user_id]
 
 async def select_model(user_id: int, new_model: str) -> str:
@@ -85,17 +114,11 @@ async def clear_history(user_id: int) -> None:
         session["chat"] = new_chat
 
 async def save_turn(user_id: int, contents: str | list[Any], model_text: str) -> None:
-    """
-    【修正點】：移除 session["chat"].history.append。
-    因為 AsyncChat 本身在發送訊息時就會記住當前對話，
-    我們只需要確保資料庫有存（以便伺服器重啟後可以恢復）即可。
-    """
     if not model_text or not model_text.strip(): return
     session = chat_dict.get(user_id)
     if not session or session["model"] is None: return
     
     user_text = _normalize_contents_for_history(contents)
-    # 確保對話存入資料庫（這是恢復記憶的唯一來源）
     await to_thread(append_turn, user_id, session["model"], user_text, model_text, conf["max_history_turns"])
 
 def _normalize_contents_for_history(contents: str | list[Any]) -> str:
@@ -103,5 +126,3 @@ def _normalize_contents_for_history(contents: str | list[Any]) -> str:
     caption = next((item.strip() for item in contents if isinstance(item, str)), "")
     prefix = "[Media] " if any(not isinstance(item, str) for item in contents) else ""
     return f"{prefix}{caption}".strip() or "[Multi-modal Content]"
-
-# 其餘 list_available_models 等函數保持原樣...
