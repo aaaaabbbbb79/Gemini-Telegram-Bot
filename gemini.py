@@ -19,7 +19,8 @@ def get_user_error_message(error: Exception) -> str:
     status = getattr(error, "status", None)
     error_text = str(error).lower()
     if isinstance(error, errors.ClientError):
-        if status == "RESOURCE_EXHAUSTED" or "429" in error_text:
+        # 根據報錯日誌，強化對 429 RESOURCE_EXHAUSTED 的判定
+        if status == "RESOURCE_EXHAUSTED" or "429" in error_text or "quota" in error_text:
             return conf["quota_error_info"]
     return error_info
 
@@ -41,7 +42,6 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
     target_model = model_name if model_name.startswith("models/") else f"models/{model_name}"
     
     # --- 系統時間與核心 Prompt 強化 ---
-    # 這裡確保 2026 年的時間認知會被強行注入到每一次 API 呼叫中
     tz_delta = datetime.timedelta(hours=8)
     current_time_str = (datetime.datetime.utcnow() + tz_delta).strftime("%Y-%m-%d %H:%M")
     system_instruction = f"[系統公告：當前時間為 {current_time_str}。如果用戶詢問天氣、新聞或即時資訊，請務必使用 google_search 工具。]"
@@ -50,10 +50,10 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
 
     async with lock:
         try:
-            # 3. 內容格式化（修正：確保多媒體也能帶入系統時間）
+            # 3. 內容格式化
             formatted_contents = []
             
-            # 強制加入時間前綴，解決 2024 年誤判問題 [解決 image_a3f15a.png]
+            # 強制加入時間前綴
             formatted_contents.append(system_instruction)
 
             if isinstance(contents, list):
@@ -67,12 +67,9 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
             else:
                 formatted_contents.append(contents)
 
-            # 4. 配置聯網工具（核心修復：解決天氣問題）
-            # 注意：這裡假設你的 utils.py 中的 chat 物件已經具備調用 tools 的能力
-            # 如果還是不能聯網，請檢查 utils.py 初始化時是否有 tools=[types.Tool(google_search=types.GoogleSearchRetrieval())]
-            
+            # 4. 配置聯網工具（根據報錯日誌修正為 GoogleSearch）
             config = types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearchRetrieval())],
+                tools=[types.Tool(google_search=types.GoogleSearch())],
                 temperature=0.7,
                 top_p=0.95,
             )
@@ -83,7 +80,6 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
 
             # 6. 更新 Telegram UI
             try:
-                # 這裡使用 MarkdownV2 渲染，確保星級符號 ★ 正常顯示
                 await bot.edit_message_text(
                     escape(full_response), 
                     chat_id=sent_message.chat.id, 
@@ -97,14 +93,15 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
                     message_id=sent_message.message_id
                 )
             
-            # 7. 成功後儲存紀錄，確保 30 分鐘後的記憶回溯 [解決 image_4a5356.png]
+            # 7. 成功後儲存紀錄
             await save_turn(message.from_user.id, original_prompt, full_response)
             return full_response
 
         except Exception as e:
             traceback.print_exc()
+            # 統一透過錯誤處理函式回傳提示
             await bot.edit_message_text(
-                f"❌ 訊號微弱：{get_user_error_message(e)}", 
+                f"❌ {get_user_error_message(e)}", 
                 chat_id=sent_message.chat.id, 
                 message_id=sent_message.message_id
             )
