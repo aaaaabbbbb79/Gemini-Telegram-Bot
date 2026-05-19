@@ -127,4 +127,35 @@ async def select_model(user_id: int, new_model: str) -> str:
         return new_model
 
 async def clear_history(user_id: int) -> None:
-    session = await init_user
+    session = await init_user(user_id)
+    async with session["lock"]:
+        await to_thread(clear_user_history, user_id)
+        session["chat"] = get_client().aio.chats.create(model=session["model"])
+
+# --- 核心修正：強制更新記憶鏈 ---
+async def save_turn(user_id: int, contents: str | list[Any], model_text: str) -> None:
+    if not model_text or not model_text.strip(): return
+    
+    session = chat_dict.get(user_id) 
+    
+    if not session: return
+    
+    user_text = _normalize_contents_for_history(contents)
+    limit = conf.get("max_history_turns", 10)
+    
+    # 1. 寫入資料庫 (永久記憶)
+    await to_thread(append_turn, user_id, session["model"], user_text, model_text, limit)
+    
+    # 2. 暴力同步：直接手動更新正在運行的 chat 物件歷史 (瞬間記憶)
+    if session["chat"] and hasattr(session["chat"], "_history"):
+        session["chat"]._history.append(
+            types.Content(role="user", parts=[types.Part.from_text(text=user_text)])
+        )
+        session["chat"]._history.append(
+            types.Content(role="model", parts=[types.Part.from_text(text=model_text)])
+        )
+
+def _normalize_contents_for_history(contents: str | list[Any]) -> str:
+    if isinstance(contents, str): return contents
+    caption = next((item.strip() for item in contents if isinstance(item, str)), "")
+    return f"[Media] {caption}".strip() if any(not isinstance(i, str) for i in contents) else caption
