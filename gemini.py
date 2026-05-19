@@ -41,10 +41,10 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
     # --- 修正後的模型名稱定義 ---
     target_model = model_name if model_name.startswith("models/") else f"models/{model_name}"
     
-    # --- 系統時間與核心 Prompt 強化 ---
+    # --- 系統時間與核心 Prompt 強化 (修正強制搜尋的死循環) ---
     tz_delta = datetime.timedelta(hours=8)
     current_time_str = (datetime.datetime.utcnow() + tz_delta).strftime("%Y-%m-%d %H:%M")
-    system_instruction = f"[系統公告：當前時間為 {current_time_str}。如果用戶詢問天氣、新聞或即時資訊，請務必使用 google_search 工具。]"
+    system_instruction = f"[系統公告：當前台灣時間為 {current_time_str}。]"
 
     original_prompt = contents if isinstance(contents, str) else "[多媒體內容分析]"
 
@@ -53,7 +53,7 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
             # 3. 內容格式化
             formatted_contents = []
             
-            # 強制加入時間前綴
+            # 加入時間前綴
             formatted_contents.append(system_instruction)
 
             if isinstance(contents, list):
@@ -67,11 +67,15 @@ async def gemini_stream(bot: TeleBot, message: Message, contents: str | list) ->
             else:
                 formatted_contents.append(contents)
 
-            # 4. 配置聯網工具（根據報錯日誌修正為 GoogleSearch）
+            # 4. 配置聯網工具與 AFC 限制 (核心修復)
             config = types.GenerateContentConfig(
                 tools=[types.Tool(google_search=types.GoogleSearch())],
                 temperature=0.7,
                 top_p=0.95,
+                # 強制鎖死自動調用次數，避免 AI 找不到答案時瘋狂重試耗盡額度
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                    maximum_remote_calls=1
+                )
             )
 
             # 5. 執行對話
