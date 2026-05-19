@@ -30,7 +30,7 @@ model_cache: dict[str, object] = {
 MODEL_CACHE_TTL = 3600
 EXCLUDED_MODEL_NAME_PARTS = ("computer-use", "customtools", "embedding", "robotics", "tts")
 
-# --- 客戶端初始化 (移除導致報錯的 httpx，保留動態金鑰讀取) ---
+# --- 客戶端初始化 ---
 def init_client(api_key: str = None) -> None:
     global client
     # 動態抓取最新金鑰，打破 Vercel 快取
@@ -39,7 +39,7 @@ def init_client(api_key: str = None) -> None:
     if not actual_key:
         raise ValueError("API Key is missing. Please check your Vercel Environment Variables.")
     
-    # 建立 GenAI Client (恢復官方標準寫法)
+    # 建立 GenAI Client
     client = genai.Client(
         api_key=actual_key, 
         http_options={'api_version': 'v1alpha'}
@@ -127,12 +127,4 @@ async def select_model(user_id: int, new_model: str) -> str:
         return new_model
 
 async def clear_history(user_id: int) -> None:
-    session = await init_user(user_id)
-    async with session["lock"]:
-        await to_thread(clear_user_history, user_id)
-        session["chat"] = get_client().aio.chats.create(model=session["model"])
-
-# --- 核心修正：強制更新記憶鏈 ---
-async def save_turn(user_id: int, contents: str | list[Any], model_text: str) -> None:
-    if not model_text or not model_text.strip(): return
-    session = chat_dict.get(user_
+    session = await init_user
