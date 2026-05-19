@@ -1,5 +1,4 @@
 import os
-import httpx
 from google.genai.chats import AsyncChat
 from google import genai
 from google.genai import types 
@@ -31,7 +30,7 @@ model_cache: dict[str, object] = {
 MODEL_CACHE_TTL = 3600
 EXCLUDED_MODEL_NAME_PARTS = ("computer-use", "customtools", "embedding", "robotics", "tts")
 
-# --- 客戶端初始化 (核心修正區) ---
+# --- 客戶端初始化 (移除導致報錯的 httpx，保留動態金鑰讀取) ---
 def init_client(api_key: str = None) -> None:
     global client
     # 動態抓取最新金鑰，打破 Vercel 快取
@@ -40,15 +39,10 @@ def init_client(api_key: str = None) -> None:
     if not actual_key:
         raise ValueError("API Key is missing. Please check your Vercel Environment Variables.")
     
-    # 設定 HTTP Client 並關閉自動重試，避免 429 死循環榨乾額度
-    transport = httpx.HTTPTransport(retries=0)
-    http_client = httpx.Client(transport=transport, timeout=30.0)
-
-    # 建立帶有限制條件的 GenAI Client
+    # 建立 GenAI Client (恢復官方標準寫法)
     client = genai.Client(
         api_key=actual_key, 
-        http_options={'api_version': 'v1alpha'},
-        http_client=http_client
+        http_options={'api_version': 'v1alpha'}
     )
     
     print(f"DEBUG: Client initialized with API Key starting with {actual_key[:8]}")
@@ -141,25 +135,4 @@ async def clear_history(user_id: int) -> None:
 # --- 核心修正：強制更新記憶鏈 ---
 async def save_turn(user_id: int, contents: str | list[Any], model_text: str) -> None:
     if not model_text or not model_text.strip(): return
-    session = chat_dict.get(user_id)
-    if not session: return
-    
-    user_text = _normalize_contents_for_history(contents)
-    limit = conf.get("max_history_turns", 10)
-    
-    # 1. 寫入資料庫 (永久記憶)
-    await to_thread(append_turn, user_id, session["model"], user_text, model_text, limit)
-    
-    # 2. 暴力同步：直接手動更新正在運行的 chat 物件歷史 (瞬間記憶)
-    if session["chat"] and hasattr(session["chat"], "_history"):
-        session["chat"]._history.append(
-            types.Content(role="user", parts=[types.Part.from_text(text=user_text)])
-        )
-        session["chat"]._history.append(
-            types.Content(role="model", parts=[types.Part.from_text(text=model_text)])
-        )
-
-def _normalize_contents_for_history(contents: str | list[Any]) -> str:
-    if isinstance(contents, str): return contents
-    caption = next((item.strip() for item in contents if isinstance(item, str)), "")
-    return f"[Media] {caption}".strip() if any(not isinstance(i, str) for i in contents) else caption
+    session = chat_dict.get(user_
