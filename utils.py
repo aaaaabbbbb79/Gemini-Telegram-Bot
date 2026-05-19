@@ -1,3 +1,5 @@
+import os
+import httpx
 from google.genai.chats import AsyncChat
 from google import genai
 from google.genai import types 
@@ -29,14 +31,33 @@ model_cache: dict[str, object] = {
 MODEL_CACHE_TTL = 3600
 EXCLUDED_MODEL_NAME_PARTS = ("computer-use", "customtools", "embedding", "robotics", "tts")
 
-# --- 客戶端初始化 ---
-def init_client(api_key: str) -> None:
+# --- 客戶端初始化 (核心修正區) ---
+def init_client(api_key: str = None) -> None:
     global client
-    client = genai.Client(api_key=api_key, http_options={'api_version': 'v1alpha'})
+    # 動態抓取最新金鑰，打破 Vercel 快取
+    actual_key = api_key or os.getenv("GEMINI_API_KEY") 
+    
+    if not actual_key:
+        raise ValueError("API Key is missing. Please check your Vercel Environment Variables.")
+    
+    # 設定 HTTP Client 並關閉自動重試，避免 429 死循環榨乾額度
+    transport = httpx.HTTPTransport(retries=0)
+    http_client = httpx.Client(transport=transport, timeout=30.0)
+
+    # 建立帶有限制條件的 GenAI Client
+    client = genai.Client(
+        api_key=actual_key, 
+        http_options={'api_version': 'v1alpha'},
+        http_client=http_client
+    )
+    
+    print(f"DEBUG: Client initialized with API Key starting with {actual_key[:8]}")
 
 def get_client() -> genai.Client:
+    global client
+    # 每次拿 client 時，確保它有正確初始化
     if client is None:
-        raise RuntimeError("Gemini client is not initialized")
+        init_client()
     return client
 
 # --- 模型管理 ---
